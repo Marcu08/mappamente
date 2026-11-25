@@ -49,8 +49,8 @@
 
 ## Testing
 
-- 88 tests: 75 core unit, 2 core integration, 4 GUI unit, 7 CLI integration.
-  Doc tests: 0.
+- 88 tests: 75 core unit, 2 core integration, 4 library unit (CLI + GUI
+  helpers), 7 CLI integration. Doc tests: 0.
 - The 1,111-node layout test has a generous 5-second guard in debug builds; it
   is not a micro-benchmark. Release layout measured at ~3 ms on this machine.
 - GUI flows were smoke-tested manually with DPI-aware mouse/keyboard automation

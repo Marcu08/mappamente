@@ -40,22 +40,27 @@ crates/mappamente/             lib + mappamente.exe (CLI) + mappamente-desktop.e
 crates/mappamente-mcp/         stdio MCP server (mappamente-mcp.exe)
 crates/mappamente-ai/          AI providers, credentials and JSON map actions
 assets/                        icon.png, mappamente.ico
-scripts/install-shortcut.ps1   Desktop/Start Menu shortcut
+scripts/install-shortcut.ps1   Desktop/Start Menu/portable shortcut
+scripts/embed-icon.ps1         Windows PE icon embedding for portable builds
 docs/                          demo map, screenshots, format and CLI docs
 .github/workflows/ci.yml       fmt, clippy -D warnings, tests on 3 OSes
 ```
 
 ## Status (2026-11-25) — v0.1.0 plus unreleased work
 
-Milestones 1–3, the external-use changes, the MCP server and the AI panel are
-complete in the working tree:
+Milestones 1–3, the external-use changes, the MCP server, the AI panel and the
+visual redesign are complete in the working tree:
 
 - core model, JSON, layouts, undo/redo, validation, tests;
-- Markdown outline import/export, SVG export with four themes;
+- Markdown outline import/export, SVG export with four themes and the shared
+  branch palette;
 - CLI `new`, `convert`, `render`, `gui`;
 - native editing canvas: inline text, add/delete, sibling ordering, drag to
   move/reparent, undo/redo, layout/theme switching persisted, open/save/save-as,
   drag & drop, unsaved-change guard, custom window icon;
+- redesigned chrome: semantic style tokens, floating icon toolbar, branch-aware
+  pill nodes and Bézier edges, adaptive dot grid, animated selection/fit,
+  floating status pill, system-theme default and user-local UI preferences;
 - Desktop shortcut `Mappamente.lnk` created via `scripts/install-shortcut.ps1`;
 - transactional `MindMap::edit`, `outline_with_ids`, Markdown subtree insertion,
   JSON migration hook, 5 MiB map-file limit;
@@ -65,7 +70,7 @@ complete in the working tree:
   OpenCode Console/local, OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI,
   Ollama, LM Studio, custom), OS-keyring keys with env fallback, JSON action
   protocol and live canvas updates in one undo step;
-- 146 tests, CI for three operating systems, dual license.
+- 155 tests, CI for three operating systems, dual license.
 
 Known architecture debt: MCP file tools and AI actions are still separate; the
 shared tool registry from D3 is pending.

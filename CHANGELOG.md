@@ -16,13 +16,44 @@ All notable changes to Mappamente are documented here.
   OpenAI-compatible providers. Keys use the OS keyring with environment
   fallbacks; returned JSON actions are applied to the live canvas in one undo
   step.
-- README, file-format, architecture and decision documentation updates.
+- Visual redesign: semantic style tokens, a floating vector-icon toolbar with
+  symmetric 24×24 glyphs, pill nodes with a curated accent and eight branch
+  hues, branch-coloured Bézier connectors, an adaptive dot grid, animated
+  selection/hover/fit, a minimal status line and a restyled AI panel with
+  collapsed provider settings.
+- User-local preferences for theme, grid and motion in the platform config
+  directory; new/welcome maps follow the OS theme by default.
+- Optional portable install: `install-shortcut.ps1 -Destination <folder>
+  -Portable` copies `Mappamente.exe`, embeds the application icon into it and
+  creates an icon shortcut next to it.
+- SVG export now shares the branch palette, readable text colors and pill
+  geometry with the canvas.
+- README, design notes, file-format, architecture and decision documentation
+  updates.
 
 ### Changed
 
 - Release profile no longer aborts on panic, so the long-running MCP server and
   future tool loops can unwind.
-- 146 tests, including local mock HTTP coverage for all three AI protocols.
+- 155 tests, including local mock HTTP coverage for all three AI protocols.
+
+### Visual changes
+
+- Toolbar icons are drawn on a 24×24 logical grid so every glyph is symmetric,
+  straight and balanced; the icon canvas is larger and the stroke is slightly
+  heavier for better readability at toolbar size.  Save, Save As and the AI
+  assistant icons were refined to be immediately readable.
+- Node labels are vertically centered using real font metrics instead of a fixed
+  line height, so single-line and wrapped text both sit cleanly inside pills.
+- Trackpad pinch-to-zoom now zooms the canvas in addition to the scroll-wheel
+  zoom; both zoom toward the pointer position.
+- The window title dirty marker is unchanged; the bottom status line now shows
+  only file state, zoom and node count.
+- Layout and theme remain document properties; switching them still participates
+  in undo and is saved with the map.
+- SVG output changed consciously: node fills, branch-colored edges, text
+  contrast and radii now match the redesigned canvas. The `.mappa` schema is
+  unchanged.
 
 ## [0.1.0] - 2026-11-25
 

@@ -28,22 +28,35 @@
 
 ### `mappamente` (lib + two binaries)
 
-- `cli.rs` — clap definitions and command implementations. No command opens
+- `cli.rs` - clap definitions and command implementations. No command opens
   the editor; otherwise `new`/`convert`/`render`/`gui`.
-- `gui.rs` — native editing canvas:
-  - top bar: New, Open, Save, Save as, Undo, Redo, Fit, layout, theme, file,
-    node count, error banner;
-  - central canvas: grid, curved edges, nodes, selection ring, inline editor;
-  - bottom bar: status and shortcut hints;
+- `style.rs` - semantic tokens (surfaces, text, accent, grid, shadows, branch
+  hues), radii, spacing, type scale and `egui` style application.
+- `icons.rs` - painted vector icons for the floating toolbar; no icon font.
+  Each icon is authored on a 24×24 logical grid so the glyphs stay symmetric,
+  straight and crisp when scaled.  Undo/redo use curved arrows, layout a
+  branching tree, theme a half-filled circle and grid a 3×3 dot matrix.
+- `ui_prefs.rs` - user-local theme/grid/motion preferences under the platform
+  config directory. It never writes next to maps.
+- `gui.rs` - native editing canvas:
+  - floating pill toolbar: vector icons, shortcut tooltips, accent state for
+    the AI panel; shifts over the canvas and hides secondary actions when the
+    AI panel is open;
+  - central canvas: adaptive dot grid, branch-coloured cubic Bézier edges,
+    pill nodes with branch depth tints, hover/selection halos, inline editor;
+  - bottom status pill: file state, zoom and node count; errors surface there;
   - pan/zoom/fit, drag move, drag-to-reparent, keyboard editing, save/discard
     guards.
-- `bin/mappamente` — console binary (`src/main.rs`), prints errors and exits 1.
-- `bin/mappamente_desktop` — GUI-subsystem binary on Windows release builds;
+- `bin/mappamente` - console binary (`src/main.rs`), prints errors and exits 1.
+- `bin/mappamente_desktop` - GUI-subsystem binary on Windows release builds;
   accepts an optional map path; shows a native error dialog on startup failure.
-  The Desktop shortcut targets this binary.
+  The Desktop shortcut targets this binary; `scripts/install-shortcut.ps1
+  -Portable` copies it to the requested folder and `scripts/embed-icon.ps1`
+  embeds `assets/mappamente.ico` into the copy.
 
-The GUI and SVG renderer share the core layout and `Palette`, so exported maps
-match the canvas.
+The GUI and SVG renderer share the core layout and `Palette`; `style.rs` maps
+the four palettes to branch tints, and the SVG exporter reuses the same branch
+palette and readable text contrast.
 
 ### `mappamente-mcp` (stdio MCP server)
 
@@ -85,16 +98,25 @@ match the canvas.
 `MappamenteApp` owns:
 
 - `Editor` (document + undo history), current path;
-- view state: `kind`, `theme`, palette, zoom, view center, fit flag;
-- derived state: cached `Layout`, custom node colors;
-- interaction state: selected node, inline `EditingState`, `DragState`;
+- view state: `kind`, `theme`, semantic `Tokens`, zoom, view center, fit flag;
+- derived state: cached `Layout`, parsed custom node colors, branch membership;
+- interaction state: selected/hovered node, inline `EditingState`, `DragState`,
+  per-node appearance timing;
 - AI state: `AiPanel` (provider/model/base URL, key status, chat entries,
-  `mpsc` receiver) and panel visibility;
+  `mpsc` receiver), panel visibility and last width;
+- user preferences (`UiPrefs`: theme, grid, animations) and system theme;
 - native window title and close guard.
 
 Document mutations always go through `Editor::apply` or `apply_coalesced`.
-`after_change` recomputes layout/colors, syncs `kind`/`theme` from the document,
-and prunes ids that disappeared after undo/delete.
+`after_change` recomputes layout/colors/branches, syncs `kind`/`theme` from the
+document, and prunes ids that disappeared after undo/delete. `style::apply` is
+only re-run when the theme or motion preference changes; colors are parsed once
+in `after_change`, never per frame.
+
+The AI panel is restyled around the same tokens: rounded bubbles, a composer
+anchored to the panel bottom and provider settings collapsed unless no key is
+available. Opening/closing it keeps the current zoom and centre; the fit
+command remains available when the reduced canvas needs a fresh frame.
 
 AI flow: `AiPanel` snapshots the map, builds the prompt, starts a plain worker
 thread with `reqwest::blocking`, and polls an `mpsc` channel from the UI. A

@@ -7,13 +7,15 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-use eframe::egui::{self, Color32, Key, RichText};
+use eframe::egui::{self, Align, Key, Margin, RichText, Stroke, StrokeKind};
 use mappamente_ai::{
     AiError, ChatMessage, ChatRequest, ChatResponse, KeySource, PRESETS, Plan, ProviderClient,
     ProviderPreset, ProviderSettings, Role, clear_api_key, key_source, load_api_key, parse_plan,
     save_api_key, system_prompt,
 };
 use mappamente_core::MindMap;
+
+use crate::style::{self, Tokens};
 
 const WELCOME: &str = "Ciao! Posso creare, riordinare o riscrivere la mappa. Le modifiche vengono applicate subito e puoi annullarle con Ctrl+Z.";
 
@@ -119,17 +121,25 @@ impl AiPanel {
     }
 
     /// Draws the panel and returns an edit to apply, if one is ready.
-    pub(crate) fn ui(&mut self, ui: &mut egui::Ui, map: &MindMap) -> Option<AiPanelAction> {
+    pub(crate) fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        map: &MindMap,
+        tokens: &Tokens,
+    ) -> Option<AiPanelAction> {
         if !self.initialized {
             self.initialized = true;
             self.key_status = key_source(self.preset());
         }
         let ready = self.poll(ui.ctx());
-        self.header(ui);
-        self.settings(ui);
-        ui.separator();
-        self.chat(ui);
-        self.composer(ui, map);
+        self.header(ui, tokens);
+        self.settings(ui, tokens);
+        ui.add_space(style::SPACE_2);
+        egui::Panel::bottom("ai_composer")
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .show(ui, |ui| self.composer(ui, map, tokens));
+        egui::CentralPanel::no_frame().show(ui, |ui| self.chat(ui, tokens));
         ready
     }
 
@@ -168,114 +178,165 @@ impl AiPanel {
         self.error = None;
     }
 
-    fn header(&mut self, ui: &mut egui::Ui) {
+    fn header(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.heading("Assistente AI");
+            ui.label(
+                RichText::new("Assistente AI")
+                    .strong()
+                    .size(style::FONT_TITLE)
+                    .color(tokens.text),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(!self.busy, egui::Button::new("Nuova chat"))
+                    .add_enabled(
+                        !self.busy,
+                        egui::Button::new(
+                            RichText::new("Nuova chat")
+                                .size(style::FONT_SMALL)
+                                .color(tokens.text_muted),
+                        )
+                        .fill(tokens.surface_muted)
+                        .stroke(Stroke::new(1.0, tokens.border)),
+                    )
                     .clicked()
                 {
                     self.reset_chat();
                 }
             });
         });
+        ui.label(
+            RichText::new("Crea e riordina la mappa con il linguaggio naturale.")
+                .size(style::FONT_SMALL)
+                .color(tokens.text_muted),
+        );
+        ui.add_space(style::SPACE_3);
     }
 
-    fn settings(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Provider e modello")
-            .default_open(true)
+    fn settings(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
+        let needs_key = self.preset().needs_key && self.key_status == KeySource::Missing;
+        egui::Frame::default()
+            .fill(tokens.surface_muted)
+            .corner_radius(egui::CornerRadius::same(style::RADIUS_CONTROL))
+            .inner_margin(Margin::symmetric(10, 6))
             .show(ui, |ui| {
-                let previous = self.provider_index;
-                egui::ComboBox::from_id_salt("ai_provider")
-                    .selected_text(self.preset().name)
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        for (index, preset) in PRESETS.iter().enumerate() {
-                            ui.selectable_value(&mut self.provider_index, index, preset.name);
+                egui::CollapsingHeader::new(
+                    RichText::new("Provider e modello")
+                        .size(style::FONT_SMALL)
+                        .color(tokens.text_muted),
+                )
+                .id_salt("ai_settings")
+                .default_open(needs_key)
+                .show(ui, |ui| {
+                    let previous = self.provider_index;
+                    egui::ComboBox::from_id_salt("ai_provider")
+                        .selected_text(self.preset().name)
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for (index, preset) in PRESETS.iter().enumerate() {
+                                ui.selectable_value(&mut self.provider_index, index, preset.name);
+                            }
+                        });
+                    if self.provider_index != previous {
+                        self.apply_preset();
+                    }
+
+                    ui.label(
+                        RichText::new(self.preset().note)
+                            .size(style::FONT_SMALL)
+                            .color(tokens.text_faint),
+                    );
+                    ui.add_space(style::SPACE_1);
+
+                    field_label(ui, tokens, "Modello");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.model)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("model id"),
+                    );
+
+                    field_label(ui, tokens, "Base URL");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.base_url)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("https://provider.example/v1"),
+                    );
+
+                    field_label(ui, tokens, "API key");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.api_key_input)
+                                .password(true)
+                                .desired_width(150.0)
+                                .hint_text("incolla la chiave"),
+                        );
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Salva").size(style::FONT_SMALL),
+                                )
+                                .fill(tokens.surface)
+                                .stroke(Stroke::new(1.0, tokens.border)),
+                            )
+                            .clicked()
+                        {
+                            self.store_key();
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Rimuovi").size(style::FONT_SMALL),
+                                )
+                                .fill(tokens.surface)
+                                .stroke(Stroke::new(1.0, tokens.border)),
+                            )
+                            .clicked()
+                        {
+                            self.remove_key();
                         }
                     });
-                if self.provider_index != previous {
-                    self.apply_preset();
-                }
 
-                ui.label(
-                    RichText::new(self.preset().note)
-                        .size(11.0)
-                        .color(ui.visuals().weak_text_color()),
-                );
-                ui.add_space(4.0);
-
-                ui.label("Modello");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.model)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("model id"),
-                );
-
-                ui.label("Base URL");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.base_url)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("https://provider.example/v1"),
-                );
-
-                ui.label("API key");
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.api_key_input)
-                            .password(true)
-                            .desired_width(170.0)
-                            .hint_text("incolla la chiave"),
-                    );
-                    if ui.button("Salva").clicked() {
-                        self.store_key();
-                    }
-                    if ui.button("Rimuovi").clicked() {
-                        self.remove_key();
-                    }
-                });
-
-                let preset = self.preset();
-                let (text, color) = if !self.api_key_input.trim().is_empty()
-                    && self.key_status == KeySource::Missing
-                {
-                    (
-                        "Chiave inserita per questa sessione (non ancora salvata).".to_owned(),
-                        ui.visuals().weak_text_color(),
-                    )
-                } else {
-                    match self.key_status {
-                        KeySource::Keyring => (
-                            "Chiave salvata nel keyring di sistema.".to_owned(),
-                            ui.visuals().weak_text_color(),
-                        ),
-                        KeySource::Environment => (
-                            format!("Chiave letta da {}.", preset.key_env),
-                            ui.visuals().weak_text_color(),
-                        ),
-                        KeySource::Missing if preset.needs_key => (
-                            format!(
-                                "Nessuna chiave: inseriscila o imposta {}.",
-                                preset.key_env
+                    let preset = self.preset();
+                    let (text, color) = if !self.api_key_input.trim().is_empty()
+                        && self.key_status == KeySource::Missing
+                    {
+                        (
+                            "Chiave inserita per questa sessione (non ancora salvata).".to_owned(),
+                            tokens.text_muted,
+                        )
+                    } else {
+                        match self.key_status {
+                            KeySource::Keyring => (
+                                "Chiave salvata nel keyring di sistema.".to_owned(),
+                                tokens.text_muted,
                             ),
-                            Color32::from_rgb(210, 150, 60),
-                        ),
-                        KeySource::Missing => (
-                            "Nessuna chiave necessaria per questo provider.".to_owned(),
-                            ui.visuals().weak_text_color(),
-                        ),
-                    }
-                };
-                ui.label(RichText::new(text).size(11.0).color(color));
+                            KeySource::Environment => (
+                                format!("Chiave letta da {}.", preset.key_env),
+                                tokens.text_muted,
+                            ),
+                            KeySource::Missing if preset.needs_key => (
+                                format!(
+                                    "Nessuna chiave: inseriscila o imposta {}.",
+                                    preset.key_env
+                                ),
+                                tokens.warning,
+                            ),
+                            KeySource::Missing => (
+                                "Nessuna chiave necessaria per questo provider.".to_owned(),
+                                tokens.text_muted,
+                            ),
+                        }
+                    };
+                    ui.label(RichText::new(text).size(style::FONT_SMALL).color(color));
 
-                ui.label(
-                    RichText::new(
-                        "La mappa corrente viene inviata al provider scelto. Le chiavi non vengono scritte nei file .mappa.",
-                    )
-                    .size(11.0)
-                    .color(ui.visuals().weak_text_color()),
-                );
+                    ui.label(
+                        RichText::new(
+                            "La mappa corrente viene inviata al provider scelto. Le chiavi non vengono scritte nei file .mappa.",
+                        )
+                        .size(style::FONT_SMALL)
+                        .color(tokens.text_faint),
+                    );
+                });
             });
     }
 
@@ -303,49 +364,15 @@ impl AiPanel {
         }
     }
 
-    fn chat(&mut self, ui: &mut egui::Ui) {
-        let height = (ui.available_height() - 115.0).max(120.0);
+    fn chat(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
+        let height = ui.available_height().max(120.0);
         egui::ScrollArea::vertical()
             .max_height(height)
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 for entry in &self.messages {
-                    match entry.kind {
-                        EntryKind::User => {
-                            ui.label(
-                                RichText::new("Tu")
-                                    .strong()
-                                    .size(11.0)
-                                    .color(ui.visuals().hyperlink_color),
-                            );
-                            ui.label(RichText::new(&entry.text).size(13.0));
-                        }
-                        EntryKind::Assistant => {
-                            ui.label(
-                                RichText::new("AI")
-                                    .strong()
-                                    .size(11.0)
-                                    .color(ui.visuals().strong_text_color()),
-                            );
-                            ui.label(RichText::new(&entry.text).size(13.0));
-                        }
-                        EntryKind::Status => {
-                            ui.label(
-                                RichText::new(&entry.text)
-                                    .italics()
-                                    .size(11.0)
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                        }
-                        EntryKind::Error => {
-                            ui.label(
-                                RichText::new(format!("Errore: {}", entry.text))
-                                    .size(12.0)
-                                    .color(Color32::from_rgb(210, 80, 80)),
-                            );
-                        }
-                    }
-                    ui.add_space(6.0);
+                    bubble(ui, entry, tokens);
+                    ui.add_space(style::SPACE_2);
                 }
 
                 if self.busy {
@@ -353,37 +380,60 @@ impl AiPanel {
                         ui.spinner();
                         ui.label(
                             RichText::new("In attesa del provider…")
-                                .size(12.0)
-                                .color(ui.visuals().weak_text_color()),
+                                .size(style::FONT_SMALL)
+                                .color(tokens.text_muted),
                         );
                     });
                 }
             });
     }
 
-    fn composer(&mut self, ui: &mut egui::Ui, map: &MindMap) {
-        ui.separator();
+    fn composer(&mut self, ui: &mut egui::Ui, map: &MindMap, tokens: &Tokens) {
+        ui.add_space(style::SPACE_2);
         if let Some(error) = &self.error {
             ui.label(
                 RichText::new(error)
-                    .size(12.0)
-                    .color(Color32::from_rgb(210, 80, 80)),
+                    .size(style::FONT_SMALL)
+                    .color(tokens.error),
             );
         }
 
-        let response = ui.add(
-            egui::TextEdit::multiline(&mut self.input)
-                .desired_rows(3)
-                .desired_width(f32::INFINITY)
-                .hint_text("Chiedi una modifica alla mappa… (Ctrl+Invio per inviare)"),
-        );
+        let input = egui::Frame::default()
+            .fill(tokens.surface_muted)
+            .stroke(Stroke::new(1.0, tokens.border))
+            .corner_radius(egui::CornerRadius::same(style::RADIUS_CONTROL))
+            .inner_margin(Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.input)
+                        .frame(egui::Frame::NONE)
+                        .margin(0)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Chiedi una modifica alla mappa… (Ctrl+Invio per inviare)"),
+                )
+            });
+        if input.inner.has_focus() {
+            ui.painter().rect_stroke(
+                input.response.rect.expand(1.0),
+                egui::CornerRadius::same(style::RADIUS_CONTROL),
+                Stroke::new(1.2, tokens.accent),
+                StrokeKind::Outside,
+            );
+        }
 
         let mut send = false;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
                     !self.busy && !self.input.trim().is_empty(),
-                    egui::Button::new("Invia"),
+                    egui::Button::new(
+                        RichText::new("Invia")
+                            .size(style::FONT_BUTTON)
+                            .color(tokens.accent_text),
+                    )
+                    .fill(tokens.accent)
+                    .stroke(Stroke::NONE),
                 )
                 .clicked()
             {
@@ -395,13 +445,13 @@ impl AiPanel {
             if let Some((input, output)) = self.usage {
                 ui.label(
                     RichText::new(format!("token: {input} in / {output} out"))
-                        .size(11.0)
-                        .color(ui.visuals().weak_text_color()),
+                        .size(style::FONT_SMALL)
+                        .color(tokens.text_faint),
                 );
             }
         });
 
-        let shortcut = response.has_focus()
+        let shortcut = input.inner.has_focus()
             && ui.input(|input| input.modifiers.command && input.key_pressed(Key::Enter));
         if !self.busy && (send || shortcut) && !self.input.trim().is_empty() {
             self.send(ui.ctx(), map);
@@ -587,6 +637,100 @@ impl AiPanel {
         self.messages.push(ChatEntry::status(WELCOME));
         self.usage = None;
         self.error = None;
+    }
+}
+
+fn field_label(ui: &mut egui::Ui, tokens: &Tokens, text: &str) {
+    ui.add_space(style::SPACE_1);
+    ui.label(
+        RichText::new(text)
+            .size(style::FONT_SMALL)
+            .color(tokens.text_muted),
+    );
+}
+
+fn bubble(ui: &mut egui::Ui, entry: &ChatEntry, tokens: &Tokens) {
+    let max_width = (ui.available_width() * 0.84).max(160.0);
+    let corner = egui::CornerRadius::same(style::RADIUS_PANEL);
+    let margin = Margin::symmetric(10, 8);
+    match entry.kind {
+        EntryKind::Status => {
+            ui.label(
+                RichText::new(&entry.text)
+                    .italics()
+                    .size(style::FONT_SMALL)
+                    .color(tokens.text_muted),
+            );
+        }
+        EntryKind::Error => {
+            egui::Frame::default()
+                .fill(style::with_alpha(tokens.error, 22))
+                .stroke(Stroke::new(1.0, style::with_alpha(tokens.error, 90)))
+                .corner_radius(corner)
+                .inner_margin(margin)
+                .show(ui, |ui| {
+                    ui.set_max_width(max_width);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("Errore: {}", entry.text))
+                                .size(style::FONT_BUTTON)
+                                .color(tokens.error),
+                        )
+                        .wrap(),
+                    );
+                });
+        }
+        EntryKind::User => {
+            ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
+                egui::Frame::default()
+                    .fill(tokens.accent_soft)
+                    .corner_radius(corner)
+                    .inner_margin(margin)
+                    .show(ui, |ui| {
+                        ui.with_layout(egui::Layout::top_down(Align::Min), |ui| {
+                            ui.set_max_width(max_width);
+                            ui.label(
+                                RichText::new("Tu")
+                                    .strong()
+                                    .size(style::FONT_SMALL)
+                                    .color(tokens.accent),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&entry.text)
+                                        .size(style::FONT_BUTTON)
+                                        .color(tokens.text),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    });
+            });
+        }
+        EntryKind::Assistant => {
+            egui::Frame::default()
+                .fill(tokens.surface)
+                .stroke(Stroke::new(1.0, tokens.border))
+                .corner_radius(corner)
+                .inner_margin(margin)
+                .show(ui, |ui| {
+                    ui.set_max_width(max_width);
+                    ui.label(
+                        RichText::new("AI")
+                            .strong()
+                            .size(style::FONT_SMALL)
+                            .color(tokens.text_muted),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&entry.text)
+                                .size(style::FONT_BUTTON)
+                                .color(tokens.text),
+                        )
+                        .wrap(),
+                    );
+                });
+        }
     }
 }
 

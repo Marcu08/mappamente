@@ -16,6 +16,11 @@
 <p align="center">
   <img src="docs/preview.png" alt="Mappamente editor showing a mind map" width="900">
 </p>
+<p align="center">
+  <a href="docs/preview-dark.png">Dark theme</a> ·
+  <a href="docs/preview-ai.png">AI panel</a> ·
+  <a href="docs/design.md">Design notes</a>
+</p>
 
 Mappamente is a lightweight, open-source mind map editor written in Rust. The
 name combines *mappa* (map) and *mente* (mind). It is built to stay small: a
@@ -23,7 +28,8 @@ native window, no WebView, plain JSON files you can read and diff, and a CLI
 you can script. Editing, layout, themes and undo are local and instant.
 
 > **v0.1.0:** the core engine, headless CLI and native editor are available.
-> The MCP server and AI assistant are in the unreleased working tree.
+> The MCP server, AI assistant and visual redesign are in the unreleased
+> working tree.
 
 ## Highlights
 
@@ -35,8 +41,32 @@ you can script. Editing, layout, themes and undo are local and instant.
 | **Interop, not lock-in** | Import Markdown outlines; export Markdown and standalone SVG with four themes. |
 | **Agent-ready** | A stdio MCP server exposes reading and editing to Claude Desktop, Claude Code and other MCP clients. |
 | **AI assistant** | A built-in panel edits the live canvas through OpenAI, Anthropic, OpenCode and other providers; every turn is one undo step. |
+| **Calm chrome** | Floating icon toolbar, branch-coloured curved connectors, adaptive dot grid and a minimal status line. Short transitions can be disabled. |
 | **Small by design** | Native `egui` canvas, no WebView, no Electron, no background services. |
 | **Open source** | MIT OR Apache-2.0, no telemetry, no account. |
+
+## Redesign
+
+The 0.1.x working tree gives the editor a quieter visual language without
+changing the `.mappa` format or the editing model:
+
+- one semantic token module (`crates/mappamente/src/style.rs`) owns colors,
+  radii, spacing, typography and shadows;
+- a floating vector-icon toolbar replaces the dense text bar, and the map is
+  the main surface; undo/redo, layout, theme and grid each have a distinct
+  painted glyph;
+- nodes are pills: the root uses the accent, each first-level branch has its
+  own hue, and descendants fade toward the surface; explicit `node.color` still
+  wins;
+- connectors are branch-coloured cubic Béziers whose width decreases with depth;
+- the dot grid is adaptive and can be toggled; selection, hover, fit and new
+  nodes use short transitions controlled by the **Animations** option;
+- the status line shows only file state, zoom and node count;
+- the theme follows the OS for new/welcome maps, while a manual choice, grid and
+  motion settings persist in the user config directory, never next to maps;
+- SVG export reuses the same branch palette, text contrast and pill geometry.
+
+See [docs/design.md](docs/design.md) for the rationale and token values.
 
 ## Quick start
 
@@ -52,6 +82,17 @@ powershell -ExecutionPolicy Bypass -File scripts/install-shortcut.ps1
 This creates **Mappamente** on your Desktop with its own icon. Double-click it
 to open the editor. The script accepts `-StartMenu` or `-Destination <folder>`
 and can be re-run after `cargo clean`.
+
+To copy a directly launchable `Mappamente.exe` and its icon shortcut into a
+folder (for example the repository root):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-shortcut.ps1 -Destination . -Portable -SkipBuild
+```
+
+The `Mappamente.lnk` shortcut carries the application icon, and the copied
+`Mappamente.exe` is self-contained apart from the map files you open. The
+`-Portable` step embeds `assets/mappamente.ico` into the copied executable.
 
 Portable launch:
 
@@ -267,7 +308,8 @@ so it uses the server's configured providers and models.
 
 - **Editor:** inline labels, add/delete nodes, sibling ordering, drag to move or
   reparent, pan/zoom/fit, layout and theme switching, undo/redo, save and save
-  as, open dialog, drag & drop, unsaved-change guard.
+  as, open dialog, drag & drop, unsaved-change guard, floating toolbar, adaptive
+  grid and branch-aware node/connector colors.
 - **Documents:** tree model, short stable IDs, notes, colors, collapsed
   branches, manual positions, validation, forward-compatible JSON.
 - **Layouts:** bilateral tree, radial and logical; wrapped labels with Unicode
@@ -278,8 +320,9 @@ so it uses the server's configured providers and models.
 - **AI:** side panel with OpenAI, Anthropic, OpenCode Console/local, OpenRouter,
   Groq, DeepSeek, Mistral, Gemini, xAI, Ollama, LM Studio and custom endpoints;
   OS keyring storage; live JSON actions in one undo step.
-- **Formats:** native `.mappa`/`.json`, Markdown outlines, SVG.
-- **Engineering:** 146 tests, CI for Linux/Windows/macOS, `clippy -D warnings`,
+- **Formats:** native `.mappa`/`.json`, Markdown outlines, SVG with the shared
+  branch palette.
+- **Engineering:** 155 tests, CI for Linux/Windows/macOS, `clippy -D warnings`,
   rustdoc clean, dual license.
 
 Not implemented yet: autosave, node notes/colors UI, collapse toggle in the
@@ -331,6 +374,9 @@ crates/
   mappamente/          lib + two binaries
     cli.rs             new | convert | render | gui
     gui.rs             editing canvas (eframe)
+    style.rs           semantic visual tokens and egui theme
+    icons.rs           painted vector toolbar icons
+    ui_prefs.rs        theme, grid and motion preferences in the config dir
     ai_panel.rs        AI side panel, worker thread and chat
     bin/mappamente     console CLI
     bin/mappamente-desktop  GUI-subsystem launcher for double-click
@@ -344,15 +390,17 @@ crates/
     action.rs          JSON edit actions and transactional application
     prompt.rs          system prompt and map context
     credential.rs      OS keyring with environment fallback
-scripts/                shortcut installer
+scripts/                shortcut installer and Windows icon embedding
 assets/                 application icon and shortcut icon
 docs/                   demo map, format and CLI docs, screenshots
 ```
 
 The core owns layout and persistence, so the editor, the SVG exporter and the
-MCP server all agree on geometry, colors and serialization. The console and
-desktop binaries share the same library; the desktop one has no console window
-on Windows release builds.
+MCP server all agree on geometry, colors and serialization. The editor's
+`style` module maps the four document palettes to neutral surfaces, branch hues
+and accessible text colors; the SVG exporter consumes the same branch palette.
+The console and desktop binaries share the same library; the desktop one has no
+console window on Windows release builds.
 
 The MCP server is a separate binary that writes files atomically; a future file
 watcher will let the GUI reload external changes. The AI panel uses

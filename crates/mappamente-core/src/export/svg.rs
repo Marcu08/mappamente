@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use crate::geom::Point;
 use crate::layout::{Layout, LayoutOptions, Metrics};
 use crate::model::{LayoutKind, MindMap, Node};
-use crate::theme::{Palette, parse_hex};
+use crate::theme::{Palette, mix_hex, parse_hex, readable_text};
 
 /// Knobs for [`to_svg`].
 #[derive(Clone, Debug)]
@@ -56,6 +56,8 @@ fn render(map: &MindMap, layout: &Layout, options: &SvgOptions) -> String {
     let offset_y = margin - bounds.y;
 
     let nodes_by_id = index_nodes(map);
+    let branches = branch_indices(map);
+    let branch_fills = palette.branch_fills();
     let mut svg = String::with_capacity(4096 + layout.nodes.len() * 320);
     let _ = writeln!(svg, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = writeln!(
@@ -88,10 +90,15 @@ fn render(map: &MindMap, layout: &Layout, options: &SvgOptions) -> String {
         let from = parent.rect.edge_toward(node.rect.center());
         let to = node.rect.edge_toward(parent.rect.center());
         let (c1, c2) = control_points(from, to);
-        let stroke_width = (2.4 - 0.22 * node.depth as f32).max(1.2);
+        let stroke_width = (2.6 - 0.22 * node.depth as f32).max(1.1);
+        let edge = branches
+            .get(node.id.as_str())
+            .map_or(palette.edge, |branch| {
+                branch_fills[*branch % branch_fills.len()]
+            });
         let _ = writeln!(
             svg,
-            r##"<path d="M {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}" stroke="{}" stroke-opacity="0.82" stroke-width="{stroke_width:.1}"/>"##,
+            r##"<path d="M {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}" stroke="{edge}" stroke-opacity="0.82" stroke-width="{stroke_width:.1}"/>"##,
             from.x + offset_x,
             from.y + offset_y,
             c1.x + offset_x,
@@ -100,7 +107,6 @@ fn render(map: &MindMap, layout: &Layout, options: &SvgOptions) -> String {
             c2.y + offset_y,
             to.x + offset_x,
             to.y + offset_y,
-            palette.edge,
         );
     }
     let _ = writeln!(svg, "</g>");
@@ -110,23 +116,43 @@ fn render(map: &MindMap, layout: &Layout, options: &SvgOptions) -> String {
         let custom_color = model_node
             .and_then(|model_node| model_node.color.as_deref())
             .filter(|color| parse_hex(color).is_some());
-        let fill = custom_color.unwrap_or_else(|| palette.node_fill(node.depth));
-        let text_color = if custom_color.is_some() {
-            crate::theme::readable_text(fill)
+        let branch = branches.get(node.id.as_str()).copied();
+        let fill = if let Some(custom) = custom_color {
+            custom.to_owned()
         } else if node.depth == 0 {
+            palette.accent.to_owned()
+        } else if let Some(branch) = branch {
+            let base = branch_fills[branch % branch_fills.len()];
+            if node.depth <= 1 {
+                base.to_owned()
+            } else {
+                let factor = ((node.depth - 1) as f32 * 0.18).min(if palette.is_dark() {
+                    0.55
+                } else {
+                    0.68
+                });
+                mix_hex(base, palette.toolbar, factor).unwrap_or_else(|| base.to_owned())
+            }
+        } else {
+            palette.node_fill(node.depth).to_owned()
+        };
+        let text_color = if node.depth == 0 && custom_color.is_none() {
             palette.accent_text
         } else {
-            palette.text
+            readable_text(&fill)
         };
+        let stroke = mix_hex(&fill, palette.text, 0.16).unwrap_or_else(|| palette.edge.to_owned());
+        let expand = if node.depth == 0 { 1.5 } else { 0.0 };
 
-        let x = node.rect.x + offset_x;
-        let y = node.rect.y + offset_y;
-        let radius = (10.0_f32).min(node.rect.h / 2.0);
+        let x = node.rect.x + offset_x - expand;
+        let y = node.rect.y + offset_y - expand;
+        let width = node.rect.w + expand * 2.0;
+        let height = node.rect.h + expand * 2.0;
+        let radius = (height * 0.5).min(18.0);
         let _ = writeln!(svg, "<g>");
         let _ = writeln!(
             svg,
-            r##"<rect x="{x:.1}" y="{y:.1}" width="{:.1}" height="{:.1}" rx="{radius:.1}" fill="{fill}" stroke="{}" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>"##,
-            node.rect.w, node.rect.h, palette.edge,
+            r##"<rect x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="{radius:.1}" fill="{fill}" stroke="{stroke}" stroke-width="1" filter="url(#mappamente-shadow)"/>"##
         );
 
         let font_size = options.metrics.font_size;
@@ -139,16 +165,17 @@ fn render(map: &MindMap, layout: &Layout, options: &SvgOptions) -> String {
             let _ = writeln!(
                 svg,
                 r#"<text x="{:.1}" y="{baseline:.1}" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="{font_size:.1}" fill="{text_color}" xml:space="preserve">{}</text>"#,
-                x + options.metrics.pad_x,
+                node.rect.x + offset_x + options.metrics.pad_x,
                 escape_xml(line),
             );
         }
 
         if node.collapsed {
+            let dot = mix_hex(&fill, text_color, 0.75).unwrap_or_else(|| text_color.to_owned());
             let _ = writeln!(
                 svg,
-                r#"<circle cx="{:.1}" cy="{:.1}" r="4" fill="{text_color}" fill-opacity="0.75"/>"#,
-                x + node.rect.w - 10.0,
+                r#"<circle cx="{:.1}" cy="{:.1}" r="4" fill="{dot}" fill-opacity="0.75"/>"#,
+                node.rect.x + node.rect.w - 10.0 + offset_x,
                 y + node.rect.h / 2.0,
             );
         }
@@ -169,6 +196,22 @@ fn index_nodes(map: &MindMap) -> HashMap<&str, &Node> {
 
     let mut out = HashMap::with_capacity(map.node_count());
     walk(&map.root, &mut out);
+    out
+}
+
+fn branch_indices(map: &MindMap) -> HashMap<&str, usize> {
+    fn walk<'a>(node: &'a Node, branch: usize, out: &mut HashMap<&'a str, usize>) {
+        for child in &node.children {
+            out.insert(child.id.as_str(), branch);
+            walk(child, branch, out);
+        }
+    }
+
+    let mut out = HashMap::with_capacity(map.node_count());
+    for (branch, child) in map.root.children.iter().enumerate() {
+        out.insert(child.id.as_str(), branch);
+        walk(child, branch, &mut out);
+    }
     out
 }
 
@@ -286,5 +329,18 @@ mod tests {
         let svg = to_svg(&map, &SvgOptions::default());
         assert!(roxmltree::Document::parse(&svg).is_ok());
         assert!(svg.contains("<rect"));
+    }
+
+    #[test]
+    fn first_level_branches_get_distinct_hues() {
+        let mut map = MindMap::new("Branches", "Root");
+        map.theme = "light".to_owned();
+        let root = map.root.id.clone();
+        map.add_child(&root, "First branch").unwrap();
+        map.add_child(&root, "Second branch").unwrap();
+        let svg = to_svg(&map, &SvgOptions::default());
+        let fills = Palette::by_name("light").branch_fills();
+        assert!(svg.contains(fills[0]));
+        assert!(svg.contains(fills[1]));
     }
 }

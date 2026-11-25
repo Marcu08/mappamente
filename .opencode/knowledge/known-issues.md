@@ -81,10 +81,13 @@
 
 - The Desktop shortcut targets `target\release\mappamente-desktop.exe`. Running
   `cargo clean` or moving the repository breaks it; re-run
-  `scripts/install-shortcut.ps1`.
-- The custom icon is used by the window and the shortcut (`assets\mappamente.ico`),
-  but it is not embedded in the `.exe` PE resources. Explorer shows the custom
-  icon through the shortcut; the bare executable may show a generic icon.
+  `scripts/install-shortcut.ps1`. `-Destination <folder> -Portable` copies
+  `Mappamente.exe` and its icon shortcut into that folder, so the launcher
+  survives a `cargo clean`.
+- The default release executable still has no icon embedded in its PE
+  resources; the window and taskbar use the runtime icon. The portable copy is
+  post-processed by `scripts/embed-icon.ps1` and does get `assets\mappamente.ico`
+  embedded, and the `.lnk` also points at that icon.
 - Installers, file associations, signing and notarization are future work.
 - Pre-built v0.1.0 artifacts are Windows x64 only; other platforms build from
   source.
@@ -112,11 +115,30 @@
 - Keyboard shortcuts require the canvas/window to have focus (click once after
   launching from automation).
 
+## Editor UI and design
+
+- Theme preference is used for new and welcome maps. Opening an existing map
+  keeps the theme stored in that file by design; changing it is a document edit.
+- Motion is controlled by a manual **Animations** checkbox; egui 0.37 has no
+  OS reduce-motion query. On a very slow machine, animations still cost one
+  extra repaint per transition.
+- The grid and motion preferences live in the user config directory. There is
+  no settings dialog to reset them to defaults or to follow the OS again without
+  editing `ui.conf` or choosing another theme.
+- On a narrow window with the AI panel open, secondary toolbar actions (Save As,
+  Layout, Theme, Grid) move to the overflow menu; keyboard shortcuts still work.
+- The status pill is painted over the canvas. With an extreme manual pan it can
+  cover a node; the fit command includes enough margin for normal use.
+- SVG export now matches the branch palette and pill radius, but it still omits
+  the interactive dot grid and uses a static drop shadow.
+- Screenshot automation must set DPI awareness before querying window/client
+  rectangles; otherwise the bottom of a 125%-scaled window is silently cropped.
+
 ## Testing
 
-- 146 tests: 90 core unit, 2 core integration, 6 library unit (CLI/GUI/AI
-  panel), 7 CLI integration, 11 MCP unit, 2 MCP stdio integration, 24 AI unit,
-  4 AI HTTP tests. Doc tests: 0.
+- 155 tests: 92 core unit, 2 core integration, 13 library unit (CLI/GUI/style/
+  preferences/AI panel), 7 CLI integration, 11 MCP unit, 2 MCP stdio integration,
+  24 AI unit, 4 AI HTTP tests. Doc tests: 0.
 - AI HTTP tests run a local `TcpListener` mock and verify OpenAI-compatible,
   Anthropic and OpenCode-local request paths, auth headers, bodies and response
   parsing without external network access.
@@ -127,6 +149,9 @@
   export/delete plus sandbox, missing-map and stale-token errors.
 - The 1,111-node layout test has a generous 5-second guard in debug builds; it
   is not a micro-benchmark. Release layout measured at ~3 ms on this machine.
+- Redesigned canvas, release build, 1,111-node map in fit view: 5.78 ms average
+  eframe CPU time per frame, 6.45 ms p95 (240 samples; the 168 ms maximum is the
+  first-frame/startup spike). This is CPU-side frame time, not a GPU profile.
 - GUI flows were smoke-tested manually with DPI-aware mouse/keyboard automation
   (create, edit, delete, undo, drag-reparent, save). There are no automated UI
   tests yet.

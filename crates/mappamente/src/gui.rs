@@ -5,13 +5,13 @@
 //! drag the background to pan. All changes go through [`Editor`], so undo,
 //! redo, coalesced drags and dirty tracking are shared with the core.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::Result;
 use eframe::egui::{
-    self, Align, Align2, Color32, ComboBox, CornerRadius, FontId, Key, Modifiers, RichText, Sense,
-    Stroke, StrokeKind,
+    self, Align2, Color32, CornerRadius, FontId, Key, Modifiers, RichText, Sense, Stroke,
+    StrokeKind,
 };
 use mappamente_ai::apply_actions;
 use mappamente_core::Editor;
@@ -21,16 +21,17 @@ use mappamente_core::model::{LayoutKind, MindMap, Node, NodeId};
 use mappamente_core::theme::{Palette, parse_hex};
 
 use crate::ai_panel::{AiPanel, AiPanelAction};
+use crate::icons::{self, Icon};
+use crate::style::{self, Tokens};
+use crate::ui_prefs::UiPrefs;
 
 const APP_NAME: &str = "Mappamente";
-const NODE_FONT: f32 = 15.0;
-const LINE_HEIGHT: f32 = 20.0;
 
 /// Opens the editor, optionally loading `initial`.
 pub fn run(initial: Option<PathBuf>) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 780.0])
+            .with_inner_size([1000.0, 600.0])
             .with_min_inner_size([720.0, 480.0])
             .with_title(APP_NAME)
             .with_icon(window_icon()),
@@ -41,18 +42,19 @@ pub fn run(initial: Option<PathBuf>) -> Result<()> {
         "mappamente",
         options,
         Box::new(move |creation| {
-            configure(&creation.egui_ctx);
-            Ok(Box::new(MappamenteApp::new(initial.clone())))
+            let system_theme = creation.egui_ctx.system_theme().map(|theme| {
+                match theme {
+                    egui::Theme::Dark => "dark",
+                    egui::Theme::Light => "light",
+                }
+                .to_owned()
+            });
+            let mut app = MappamenteApp::new(initial.clone(), system_theme);
+            app.apply_visuals(&creation.egui_ctx);
+            Ok(Box::new(app))
         }),
     )
     .map_err(|error| anyhow::anyhow!("cannot open the Mappamente window: {error}"))
-}
-
-fn configure(context: &egui::Context) {
-    context.all_styles_mut(|style| {
-        style.spacing.button_padding = egui::vec2(10.0, 5.0);
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    });
 }
 
 struct EditingState {
@@ -70,48 +72,68 @@ struct DragState {
     moved: bool,
 }
 
+struct FitAnimation {
+    start_time: f64,
+    from_zoom: f32,
+    to_zoom: f32,
+    from_center: mappamente_core::Point,
+    to_center: mappamente_core::Point,
+}
+
 struct MappamenteApp {
     editor: Editor,
     path: Option<PathBuf>,
     kind: LayoutKind,
     theme: String,
-    palette: Palette,
-    applied_theme: Option<String>,
+    tokens: Tokens,
+    applied_style: Option<(String, bool)>,
     layout: Layout,
-    colors: HashMap<String, String>,
+    colors: HashMap<String, Color32>,
+    branch_of: HashMap<String, usize>,
     zoom: f32,
     view_center: mappamente_core::Point,
     fit_pending: bool,
+    fit_animation: Option<FitAnimation>,
     error: Option<String>,
     selected: Option<NodeId>,
+    hovered: Option<NodeId>,
     editing: Option<EditingState>,
     drag: Option<DragState>,
     window_title: String,
     allow_close: bool,
     ai: AiPanel,
     ai_open: bool,
+    ai_width: f32,
+    prefs: UiPrefs,
+    system_theme: Option<String>,
+    known_nodes: HashSet<String>,
+    node_birth: HashMap<String, f64>,
+    nodes_initialized: bool,
 }
 
 impl MappamenteApp {
-    fn new(initial: Option<PathBuf>) -> Self {
+    fn new(initial: Option<PathBuf>, system_theme: Option<String>) -> Self {
+        let prefs = UiPrefs::load();
+        let default_theme = prefs.theme_or(system_theme.as_deref());
         let mut error = None;
         let (map, path) = match initial {
             Some(path) => match io::load_path(&path) {
                 Ok(map) => (map, Some(path)),
                 Err(load_error) => {
                     error = Some(format!("Could not open {}: {load_error}", path.display()));
-                    (welcome_map(), None)
+                    (welcome_map(&default_theme), None)
                 }
             },
-            None => (welcome_map(), None),
+            None => (welcome_map(&default_theme), None),
         };
 
         let selected = Some(map.root.id.clone());
         let kind = map.layout;
-        let palette = Palette::by_name(&map.theme);
-        let theme = palette.name.to_owned();
+        let theme = Palette::by_name(&map.theme).name.to_owned();
+        let tokens = Tokens::for_theme(&theme);
         let layout = compute_layout(&map, kind);
         let colors = collect_colors(&map);
+        let branch_of = collect_branches(&map);
         let editor = Editor::new(map);
 
         Self {
@@ -119,21 +141,30 @@ impl MappamenteApp {
             path,
             kind,
             theme,
-            palette,
-            applied_theme: None,
+            tokens,
+            applied_style: None,
             layout,
             colors,
+            branch_of,
             zoom: 1.0,
             view_center: mappamente_core::Point::ZERO,
             fit_pending: true,
+            fit_animation: None,
             error,
             selected,
+            hovered: None,
             editing: None,
             drag: None,
             window_title: String::new(),
             allow_close: false,
             ai: AiPanel::new(),
             ai_open: false,
+            ai_width: 380.0,
+            prefs,
+            system_theme,
+            known_nodes: HashSet::new(),
+            node_birth: HashMap::new(),
+            nodes_initialized: false,
         }
     }
 
@@ -149,16 +180,23 @@ impl MappamenteApp {
         match io::load_path(&path) {
             Ok(map) => {
                 self.kind = map.layout;
-                self.palette = Palette::by_name(&map.theme);
-                self.theme = self.palette.name.to_owned();
+                self.theme = Palette::by_name(&map.theme).name.to_owned();
+                self.tokens = Tokens::for_theme(&self.theme);
+                self.applied_style = None;
                 self.layout = compute_layout(&map, self.kind);
                 self.colors = collect_colors(&map);
+                self.branch_of = collect_branches(&map);
                 self.selected = Some(map.root.id.clone());
                 self.editor = Editor::new(map);
                 self.path = Some(path);
                 self.error = None;
                 self.editing = None;
                 self.drag = None;
+                self.hovered = None;
+                self.fit_animation = None;
+                self.known_nodes.clear();
+                self.node_birth.clear();
+                self.nodes_initialized = false;
                 self.fit_pending = true;
             }
             Err(error) => {
@@ -183,11 +221,11 @@ impl MappamenteApp {
         if !self.confirm_discard() {
             return;
         }
-        let map = MindMap::new("Untitled map", "Central idea");
+        let theme = self.prefs.theme_or(self.system_theme.as_deref());
+        let mut map = MindMap::new("Untitled map", "Central idea");
+        map.theme = theme;
         let root = map.root.id.clone();
         self.kind = map.layout;
-        self.palette = Palette::by_name(&map.theme);
-        self.theme = self.palette.name.to_owned();
         self.editor = Editor::new(map);
         self.editor.mark_dirty();
         self.path = None;
@@ -195,6 +233,12 @@ impl MappamenteApp {
         self.error = None;
         self.editing = None;
         self.drag = None;
+        self.hovered = None;
+        self.fit_animation = None;
+        self.applied_style = None;
+        self.nodes_initialized = false;
+        self.known_nodes.clear();
+        self.node_birth.clear();
         self.after_change();
         self.fit_pending = true;
     }
@@ -263,28 +307,39 @@ impl MappamenteApp {
     /// Recomputes derived data after a document change and prunes stale ids.
     fn after_change(&mut self) {
         self.kind = self.editor.map().layout;
-        self.palette = Palette::by_name(&self.editor.map().theme);
-        self.theme = self.palette.name.to_owned();
+        let theme = Palette::by_name(&self.editor.map().theme).name.to_owned();
+        if theme != self.theme {
+            self.theme = theme;
+            self.tokens = Tokens::for_theme(&self.theme);
+            self.applied_style = None;
+        }
 
         let selected = self.selected.clone();
+        let hovered = self.hovered.clone();
         let editing = self.editing.as_ref().map(|state| state.id.clone());
         let drag = self.drag.as_ref().map(|state| state.id.clone());
 
-        let (colors, layout, selected_valid, editing_valid, drag_valid) = {
+        let (colors, branches, layout, selected_valid, hovered_valid, editing_valid, drag_valid) = {
             let map = self.map();
             (
                 collect_colors(map),
+                collect_branches(map),
                 compute_layout(map, self.kind),
                 selected.as_deref().is_some_and(|id| map.find(id).is_some()),
+                hovered.as_deref().is_some_and(|id| map.find(id).is_some()),
                 editing.as_deref().is_some_and(|id| map.find(id).is_some()),
                 drag.as_deref().is_some_and(|id| map.find(id).is_some()),
             )
         };
 
         self.colors = colors;
+        self.branch_of = branches;
         self.layout = layout;
         if selected.is_some() && !selected_valid {
             self.selected = None;
+        }
+        if hovered.is_some() && !hovered_valid {
+            self.hovered = None;
         }
         if editing.is_some() && !editing_valid {
             self.editing = None;
@@ -631,28 +686,259 @@ impl MappamenteApp {
     }
 
     fn apply_visuals(&mut self, context: &egui::Context) {
-        if self.applied_theme.as_deref() == Some(self.theme.as_str()) {
+        let key = (self.theme.clone(), self.prefs.animations);
+        if self.applied_style.as_ref() == Some(&key) {
             return;
         }
-        let light = matches!(self.theme.as_str(), "light" | "paper");
-        context.set_theme(if light {
-            egui::ThemePreference::Light
-        } else {
-            egui::ThemePreference::Dark
-        });
-        context.all_styles_mut(|style| {
-            style.visuals.panel_fill = color(self.palette.toolbar);
-            style.visuals.window_fill = color(self.palette.toolbar);
-            style.visuals.extreme_bg_color = color(self.palette.background);
-            style.visuals.faint_bg_color = color(self.palette.grid);
-            style.visuals.selection.bg_fill = color(self.palette.accent).gamma_multiply(0.55);
-        });
-        self.applied_theme = Some(self.theme.clone());
+        style::apply(context, &self.tokens, self.prefs.animations);
+        self.applied_style = Some(key);
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let palette = self.palette;
-        let node_count = self.map().node_count();
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let tokens = self.tokens;
+        let can_undo = self.editing.is_none() && self.editor.can_undo();
+        let can_redo = self.editing.is_none() && self.editor.can_redo();
+
+        egui::Area::new(egui::Id::unique("mappamente_toolbar"))
+            .anchor(
+                Align2::CENTER_TOP,
+                egui::vec2(
+                    if self.ai_open {
+                        -self.ai_width * 0.5
+                    } else {
+                        0.0
+                    },
+                    12.0,
+                ),
+            )
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::default()
+                    .fill(tokens.surface)
+                    .stroke(Stroke::new(1.0, tokens.border))
+                    .corner_radius(CornerRadius::same(style::RADIUS_PANEL))
+                    .shadow(tokens.floating_shadow())
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if self.toolbar_button(ui, Icon::New, false, true, "New map · Ctrl+N")
+                            {
+                                self.new_map();
+                            }
+                            if self.toolbar_button(ui, Icon::Open, false, true, "Open map · Ctrl+O")
+                            {
+                                self.pick_file();
+                            }
+                            if self.toolbar_button(ui, Icon::Save, false, true, "Save · Ctrl+S") {
+                                self.save();
+                            }
+                            if !self.ai_open
+                                && self.toolbar_button(
+                                    ui,
+                                    Icon::SaveAs,
+                                    false,
+                                    true,
+                                    "Save as · Ctrl+Shift+S",
+                                )
+                            {
+                                self.save_as();
+                            }
+
+                            ui.separator();
+                            if self.toolbar_button(ui, Icon::Undo, false, can_undo, "Undo · Ctrl+Z")
+                            {
+                                self.undo();
+                            }
+                            if self.toolbar_button(
+                                ui,
+                                Icon::Redo,
+                                false,
+                                can_redo,
+                                "Redo · Ctrl+Shift+Z / Ctrl+Y",
+                            ) {
+                                self.redo();
+                            }
+                            if self.toolbar_button(ui, Icon::Fit, false, true, "Fit map · F") {
+                                self.fit_pending = true;
+                            }
+
+                            ui.separator();
+                            if self.toolbar_button(
+                                ui,
+                                Icon::Ai,
+                                self.ai_open,
+                                true,
+                                "AI assistant · Ctrl+Shift+A",
+                            ) {
+                                if !self.ai_open {
+                                    self.commit_editing();
+                                }
+                                self.ai_open = !self.ai_open;
+                            }
+
+                            ui.separator();
+                            if !self.ai_open {
+                                let layout_tip =
+                                    format!("Layout: {} · click to cycle", layout_name(self.kind));
+                                if self.toolbar_button(ui, Icon::Layout, false, true, &layout_tip) {
+                                    self.cycle_layout();
+                                }
+                                let theme_tip = format!("Theme: {} · click to cycle", self.theme);
+                                if self.toolbar_button(ui, Icon::Theme, false, true, &theme_tip) {
+                                    self.cycle_theme();
+                                }
+                                if self.toolbar_button(
+                                    ui,
+                                    Icon::Grid,
+                                    self.prefs.grid,
+                                    true,
+                                    "Dot grid",
+                                ) {
+                                    self.prefs.grid = !self.prefs.grid;
+                                    self.prefs.save();
+                                }
+                            }
+
+                            ui.menu_button(
+                                RichText::new("⋯").size(16.0).color(tokens.text_muted),
+                                |ui| {
+                                    if ui.button("Save as…").clicked() {
+                                        self.save_as();
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    ui.label(
+                                        RichText::new("Layout").size(11.0).color(tokens.text_muted),
+                                    );
+                                    for kind in
+                                        [LayoutKind::Tree, LayoutKind::Radial, LayoutKind::Logical]
+                                    {
+                                        if ui
+                                            .selectable_label(self.kind == kind, layout_name(kind))
+                                            .clicked()
+                                        {
+                                            self.set_layout(kind);
+                                            ui.close();
+                                        }
+                                    }
+                                    ui.separator();
+                                    ui.label(
+                                        RichText::new("Theme").size(11.0).color(tokens.text_muted),
+                                    );
+                                    for name in Palette::NAMES {
+                                        if ui.selectable_label(self.theme == name, name).clicked() {
+                                            self.set_theme(name);
+                                            ui.close();
+                                        }
+                                    }
+                                    ui.separator();
+                                    if ui.checkbox(&mut self.prefs.grid, "Dot grid").changed() {
+                                        self.prefs.save();
+                                    }
+                                    if ui
+                                        .checkbox(&mut self.prefs.animations, "Animations")
+                                        .changed()
+                                    {
+                                        self.applied_style = None;
+                                        self.prefs.save();
+                                    }
+                                },
+                            )
+                            .response
+                            .on_hover_text("View options");
+                        });
+                    });
+            });
+    }
+
+    fn toolbar_button(
+        &self,
+        ui: &mut egui::Ui,
+        icon: Icon,
+        selected: bool,
+        enabled: bool,
+        tooltip: &str,
+    ) -> bool {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 30.0), Sense::click());
+        let hovered = response.hovered() && enabled;
+        let fill = if selected {
+            self.tokens.accent_soft
+        } else if hovered {
+            self.tokens.surface_muted
+        } else {
+            Color32::TRANSPARENT
+        };
+        if fill.a() > 0 {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(style::RADIUS_CONTROL), fill);
+        }
+        let color = if !enabled {
+            self.tokens.text_faint
+        } else if selected {
+            self.tokens.accent
+        } else if hovered {
+            self.tokens.text
+        } else {
+            self.tokens.text_muted
+        };
+        icons::draw(ui.painter(), rect.shrink(5.0), icon, color);
+        let response = response.on_hover_text(tooltip);
+        enabled && response.clicked()
+    }
+
+    fn set_layout(&mut self, kind: LayoutKind) {
+        if kind == self.kind {
+            return;
+        }
+        self.commit_editing();
+        if self
+            .apply("change layout", |map| {
+                map.set_layout(kind);
+                Ok(())
+            })
+            .is_some()
+        {
+            self.fit_pending = true;
+        }
+    }
+
+    fn cycle_layout(&mut self) {
+        let order = [LayoutKind::Tree, LayoutKind::Radial, LayoutKind::Logical];
+        let index = order
+            .iter()
+            .position(|kind| *kind == self.kind)
+            .unwrap_or(0);
+        self.set_layout(order[(index + 1) % order.len()]);
+    }
+
+    fn set_theme(&mut self, theme: &str) {
+        if theme == self.theme {
+            return;
+        }
+        self.commit_editing();
+        if self
+            .apply("change theme", |map| {
+                map.theme = theme.to_owned();
+                Ok(())
+            })
+            .is_some()
+        {
+            self.prefs.theme = Some(theme.to_owned());
+            self.prefs.save();
+        }
+    }
+
+    fn cycle_theme(&mut self) {
+        let index = Palette::NAMES
+            .iter()
+            .position(|name| *name == self.theme)
+            .unwrap_or(0);
+        let next = Palette::NAMES[(index + 1) % Palette::NAMES.len()];
+        self.set_theme(next);
+    }
+
+    fn paint_status(&self, painter: &egui::Painter, viewport: egui::Rect) {
+        let tokens = self.tokens;
         let dirty = self.editor.is_dirty();
         let file_name = self
             .path
@@ -661,176 +947,98 @@ impl MappamenteApp {
             .and_then(|name| name.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| self.map().title.clone());
-
-        egui::Panel::top("mappamente_top")
-            .frame(
-                egui::Frame::default()
-                    .fill(color(palette.toolbar))
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(APP_NAME)
-                            .color(color(palette.accent))
-                            .strong()
-                            .size(18.0),
-                    );
-                    ui.add_space(4.0);
-
-                    if ui.button("New").clicked() {
-                        self.new_map();
-                    }
-                    if ui.button("Open…").clicked() {
-                        self.pick_file();
-                    }
-                    if ui.button("Save").clicked() {
-                        self.save();
-                    }
-                    if ui.button("Save as…").clicked() {
-                        self.save_as();
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(
-                            self.editing.is_none() && self.editor.can_undo(),
-                            egui::Button::new("Undo"),
-                        )
-                        .clicked()
-                    {
-                        self.undo();
-                    }
-                    if ui
-                        .add_enabled(
-                            self.editing.is_none() && self.editor.can_redo(),
-                            egui::Button::new("Redo"),
-                        )
-                        .clicked()
-                    {
-                        self.redo();
-                    }
-                    if ui.button("Fit").clicked() {
-                        self.fit_pending = true;
-                    }
-                    ui.separator();
-                    if ui.selectable_label(self.ai_open, "AI").clicked() {
-                        if !self.ai_open {
-                            self.commit_editing();
-                        }
-                        self.ai_open = !self.ai_open;
-                    }
-
-                    ui.separator();
-                    ui.label("Layout");
-                    let previous_kind = self.kind;
-                    ComboBox::from_id_salt("layout_combo")
-                        .selected_text(layout_name(self.kind))
-                        .width(88.0)
-                        .show_ui(ui, |ui| {
-                            for kind in [LayoutKind::Tree, LayoutKind::Radial, LayoutKind::Logical]
-                            {
-                                ui.selectable_value(&mut self.kind, kind, layout_name(kind));
-                            }
-                        });
-                    if self.kind != previous_kind {
-                        let kind = self.kind;
-                        self.commit_editing();
-                        self.apply("change layout", |map| {
-                            map.set_layout(kind);
-                            Ok(())
-                        });
-                        self.fit_pending = true;
-                    }
-
-                    ui.label("Theme");
-                    let previous_theme = self.theme.clone();
-                    ComboBox::from_id_salt("theme_combo")
-                        .selected_text(self.theme.clone())
-                        .width(82.0)
-                        .show_ui(ui, |ui| {
-                            for name in Palette::NAMES {
-                                ui.selectable_value(&mut self.theme, name.to_owned(), name);
-                            }
-                        });
-                    if self.theme != previous_theme {
-                        let theme = self.theme.clone();
-                        self.commit_editing();
-                        self.apply("change theme", |map| {
-                            map.theme = theme;
-                            Ok(())
-                        });
-                        self.applied_theme = None;
-                    }
-
-                    ui.separator();
-                    let label = if dirty {
-                        format!("{file_name} •")
-                    } else {
-                        file_name
-                    };
-                    ui.label(RichText::new(label).color(color(palette.muted_text)));
-
-                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("{node_count} nodes"))
-                                .color(color(palette.muted_text)),
-                        );
-                    });
-                });
-
-                if let Some(error) = &self.error {
-                    ui.label(
-                        RichText::new(error)
-                            .color(Color32::from_rgb(180, 60, 60))
-                            .size(13.0),
-                    );
-                }
-            });
-    }
-
-    fn bottom_bar(&mut self, ui: &mut egui::Ui) {
-        let palette = self.palette;
-        let status = format!(
-            "{} nodes · {} · zoom {:.0}%{}",
-            self.map().node_count(),
-            layout_name(self.kind),
-            self.zoom * 100.0,
-            if self.editor.is_dirty() {
-                " · unsaved"
-            } else {
-                ""
-            }
+        let file_name = truncate(&file_name, 34);
+        let nodes = self.map().node_count();
+        let nodes_text = if nodes == 1 {
+            "1 node".to_owned()
+        } else {
+            format!("{nodes} nodes")
+        };
+        let state = if dirty { "unsaved" } else { "saved" };
+        let text = format!(
+            "{file_name}   ·   {state}   ·   {:.0}%   ·   {nodes_text}",
+            self.zoom * 100.0
         );
-        egui::Panel::bottom("mappamente_bottom")
-            .frame(
-                egui::Frame::default()
-                    .fill(color(palette.toolbar))
-                    .inner_margin(egui::Margin::symmetric(12, 5)),
+        let font = FontId::proportional(style::FONT_SMALL);
+        let status = painter.layout_no_wrap(text, font.clone(), tokens.text_muted);
+        let error = self.error.as_ref().map(|error| {
+            painter.layout(
+                error.clone(),
+                font,
+                tokens.error,
+                (viewport.width() - 48.0).clamp(180.0, 440.0),
             )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(status)
-                            .color(color(palette.muted_text))
-                            .size(12.0),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(
-                                "Double-click: edit · Tab: child · Enter: sibling · Del: remove · Ctrl+S: save",
-                            )
-                            .color(color(palette.muted_text))
-                            .size(12.0),
-                        );
-                    });
-                });
-            });
+        });
+
+        let padding = 10.0;
+        let dot_width = 14.0;
+        let error_height = error
+            .as_ref()
+            .map_or(0.0, |galley| galley.size().y + style::SPACE_1);
+        let width = (status.size().x + dot_width + padding * 2.0)
+            .max(
+                error
+                    .as_ref()
+                    .map_or(0.0, |galley| galley.size().x + padding * 2.0),
+            )
+            .min(viewport.width() - 24.0);
+        let height = status.size().y + error_height + padding * 2.0;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(
+                viewport.center().x - width * 0.5,
+                viewport.bottom() - 12.0 - height,
+            ),
+            egui::vec2(width, height),
+        );
+        let radius = CornerRadius::same(style::RADIUS_PANEL);
+        let radius_soft = CornerRadius::same(style::RADIUS_PANEL.saturating_add(1));
+        let shadow = tokens.status_shadow();
+
+        painter.rect_filled(
+            rect.translate(egui::vec2(
+                f32::from(shadow.offset[0]),
+                f32::from(shadow.offset[1]),
+            ))
+            .expand(f32::from(shadow.spread) + 1.0),
+            radius_soft,
+            style::with_alpha(shadow.color, 14),
+        );
+        painter.rect_filled(rect, radius, tokens.surface);
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, tokens.border),
+            StrokeKind::Inside,
+        );
+
+        let line_y = rect.top() + padding + error_height;
+        painter.circle_filled(
+            egui::pos2(rect.left() + padding + 3.0, line_y + status.size().y * 0.5),
+            3.0,
+            if dirty {
+                tokens.warning
+            } else {
+                tokens.success
+            },
+        );
+        painter.galley(
+            egui::pos2(rect.left() + padding + dot_width, line_y),
+            status,
+            tokens.text_muted,
+        );
+        if let Some(error) = error {
+            painter.galley(
+                egui::pos2(rect.left() + padding, rect.top() + padding),
+                error,
+                tokens.error,
+            );
+        }
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui) {
-        let palette = self.palette;
+        let tokens = self.tokens;
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(color(palette.background)))
+            .frame(egui::Frame::default().fill(tokens.bg))
             .show(ui, |ui| {
                 let available = ui.available_size();
                 let (response, painter) = ui.allocate_painter(available, Sense::click_and_drag());
@@ -840,17 +1048,31 @@ impl MappamenteApp {
                 }
 
                 if self.fit_pending {
-                    self.fit(viewport);
+                    self.begin_fit(ui.ctx(), viewport);
                     self.fit_pending = false;
                 }
+                self.update_fit_animation(ui.ctx());
 
+                let now = ui.input(|input| input.time);
+                self.track_node_births(now);
+                let pointer = ui.input(|input| input.pointer.hover_pos());
+                self.hovered = pointer
+                    .and_then(|position| self.node_at(position, viewport))
+                    .map(|node| node.id.clone());
+
+                // Trackpad pinch zoom takes precedence; fall back to scroll-wheel zoom.
+                let zoom_delta = ui.input(|input| input.zoom_delta());
                 let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-                if response.hovered() && scroll.abs() > 0.01 {
-                    let pointer = ui
-                        .input(|input| input.pointer.hover_pos())
-                        .unwrap_or_else(|| viewport.center());
+                if response.hovered() && (zoom_delta != 1.0 || scroll.abs() > 0.01) {
+                    self.fit_animation = None;
+                    let pointer = pointer.unwrap_or_else(|| viewport.center());
                     let before = self.world_at(pointer, viewport);
-                    self.zoom = (self.zoom * (scroll * 0.0015).exp()).clamp(0.08, 4.0);
+                    let factor = if zoom_delta != 1.0 {
+                        zoom_delta
+                    } else {
+                        (scroll * 0.0015).exp()
+                    };
+                    self.zoom = (self.zoom * factor).clamp(0.08, 4.0);
                     let after = self.world_at(pointer, viewport);
                     self.view_center.x += before.x - after.x;
                     self.view_center.y += before.y - after.y;
@@ -860,8 +1082,9 @@ impl MappamenteApp {
 
                 self.paint_grid(&painter, viewport);
                 self.paint_edges(&painter, viewport);
-                self.paint_nodes(&painter, viewport);
+                self.paint_nodes(ui.ctx(), &painter, viewport, now);
                 self.show_editor(ui, viewport);
+                self.paint_status(&painter, viewport);
             });
     }
 
@@ -988,9 +1211,9 @@ impl MappamenteApp {
             screen_rect.min.y.max(viewport.min.y + 8.0),
         );
         let width = screen_rect.width().max(220.0);
-        let font_size = (NODE_FONT * self.zoom).clamp(11.0, 22.0);
-        let fill = color(self.palette.toolbar);
-        let border = Stroke::new(1.5, color(self.palette.accent));
+        let font_size = (style::FONT_NODE * self.zoom).clamp(11.0, 22.0);
+        let fill = self.tokens.surface;
+        let border = Stroke::new(1.5, self.tokens.accent);
 
         let Some(edit) = self.editing.as_mut() else {
             return;
@@ -1005,6 +1228,7 @@ impl MappamenteApp {
                 egui::Frame::default()
                     .fill(fill)
                     .stroke(border)
+                    .corner_radius(egui::CornerRadius::same(style::RADIUS_CONTROL))
                     .inner_margin(egui::Margin::same(6))
                     .show(ui, |ui| {
                         ui.set_min_width(width);
@@ -1035,33 +1259,36 @@ impl MappamenteApp {
     }
 
     fn paint_grid(&self, painter: &egui::Painter, viewport: egui::Rect) {
-        if self.zoom < 0.35 {
+        if !self.prefs.grid || self.zoom < 0.16 {
             return;
         }
-        let step = 48.0;
+        // Keep dots between roughly 24 and 72 screen pixels apart, so the count
+        // stays bounded at every zoom level.
+        let mut step = 48.0;
+        while step * self.zoom < 24.0 {
+            step *= 2.0;
+        }
+        while step * self.zoom > 72.0 && step > 12.0 {
+            step *= 0.5;
+        }
         let top_left = self.world_at(viewport.left_top(), viewport);
-        let bottom_right = self.world_at(viewport.right_bottom(), viewport);
         let start_x = (top_left.x / step).floor() * step;
         let start_y = (top_left.y / step).floor() * step;
-        let dot = color(self.palette.grid);
-        let mut x = start_x;
-        let mut columns = 0;
-        while x <= bottom_right.x && columns < 300 {
-            let mut y = start_y;
-            let mut rows = 0;
-            while y <= bottom_right.y && rows < 300 {
+        let screen_step = (step * self.zoom).max(1.0);
+        let columns = (viewport.width() / screen_step).ceil() as usize + 2;
+        let rows = (viewport.height() / screen_step).ceil() as usize + 2;
+        let dot = style::with_alpha(self.tokens.grid, if self.tokens.dark { 150 } else { 200 });
+        for column in 0..columns {
+            let x = start_x + column as f32 * step;
+            for row in 0..rows {
+                let y = start_y + row as f32 * step;
                 let position = self.to_screen(mappamente_core::Point::new(x, y), viewport);
-                painter.circle_filled(position, 1.1, dot);
-                y += step;
-                rows += 1;
+                painter.circle_filled(position, 1.0, dot);
             }
-            x += step;
-            columns += 1;
         }
     }
 
     fn paint_edges(&self, painter: &egui::Painter, viewport: egui::Rect) {
-        let stroke_color = color(self.palette.edge);
         for node in &self.layout.nodes {
             let Some(parent_id) = &node.parent else {
                 continue;
@@ -1077,60 +1304,127 @@ impl MappamenteApp {
             let p2 = self.to_screen(control_b, viewport);
             let p3 = self.to_screen(to, viewport);
             if !egui::Rect::from_two_pos(p0, p3)
-                .expand(120.0)
+                .expand(160.0)
                 .intersects(viewport)
-                && p0.distance(p3) >= 1.0
+                || p0.distance(p3) < 0.5
             {
                 continue;
             }
 
-            let mut points = Vec::with_capacity(17);
-            for index in 0..=16 {
-                let t = index as f32 / 16.0;
-                points.push(cubic_point(p0, p1, p2, p3, t));
-            }
-            let width = (2.4 - 0.22 * node.depth as f32).max(1.2) * self.zoom.clamp(0.55, 1.8);
-            painter.add(egui::Shape::line(points, Stroke::new(width, stroke_color)));
+            let branch = self.branch_of.get(&node.id).copied();
+            let color = self.tokens.edge_color(branch, node.depth);
+            let width = (2.6 - 0.22 * node.depth as f32).max(1.1) * self.zoom.clamp(0.55, 1.8);
+            painter.add(egui::Shape::CubicBezier(
+                egui::epaint::CubicBezierShape::from_points_stroke(
+                    [p0, p1, p2, p3],
+                    false,
+                    Color32::TRANSPARENT,
+                    Stroke::new(width, color),
+                ),
+            ));
         }
     }
 
-    fn paint_nodes(&self, painter: &egui::Painter, viewport: egui::Rect) {
-        let text_size = NODE_FONT * self.zoom;
+    fn paint_nodes(
+        &self,
+        context: &egui::Context,
+        painter: &egui::Painter,
+        viewport: egui::Rect,
+        now: f64,
+    ) {
+        let text_size = style::FONT_NODE * self.zoom;
+        let selected_id = self.selected.as_deref();
+        let hovered_id = self.hovered.as_deref();
+        let selection = if self.prefs.animations {
+            selected_id.map_or(0.0, |id| {
+                context.animate_bool_with_time(
+                    egui::Id::unique(("node_selection", id)),
+                    true,
+                    style::ANIMATION_TIME,
+                )
+            })
+        } else if selected_id.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        let hover = if self.prefs.animations {
+            hovered_id.map_or(0.0, |id| {
+                context.animate_bool_with_time(
+                    egui::Id::unique(("node_hover", id)),
+                    true,
+                    style::ANIMATION_TIME,
+                )
+            })
+        } else if hovered_id.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+
         for node in &self.layout.nodes {
             let screen_rect = self.to_screen_rect(node.rect, viewport);
             if !screen_rect.intersects(viewport) {
                 continue;
             }
 
-            let custom = self.colors.get(&node.id).map(String::as_str);
-            let fill_hex = custom.unwrap_or_else(|| self.palette.node_fill(node.depth));
-            let fill = color_hex(fill_hex);
-            let text_color = if custom.is_some() {
-                color_hex(mappamente_core::theme::readable_text(fill_hex))
-            } else if node.depth == 0 {
-                color(self.palette.accent_text)
+            let appear = self.node_alpha(&node.id, now);
+            if appear <= 0.0 {
+                continue;
+            }
+            let custom = self.colors.get(&node.id).copied();
+            let base_fill =
+                self.tokens
+                    .node_fill(self.branch_of.get(&node.id).copied(), node.depth, custom);
+            let base_text = self.tokens.node_text(base_fill, node.depth);
+            let fill = style::fade(base_fill, appear);
+            let text_color = style::fade(base_text, appear);
+            let visual_rect = if node.depth == 0 {
+                screen_rect.expand(1.5)
             } else {
-                color(self.palette.text)
+                screen_rect
             };
+            let radius = (visual_rect.height() * 0.5).clamp(3.0, style::RADIUS_NODE_MAX) as u8;
+            let corner = CornerRadius::same(radius);
+            let is_selected = selected_id == Some(node.id.as_str());
+            let is_hovered = hovered_id == Some(node.id.as_str());
 
-            let radius = (10.0 * self.zoom).clamp(2.0, 16.0) as u8;
-            painter.rect_filled(screen_rect, CornerRadius::same(radius), fill);
-            painter.rect_stroke(
-                screen_rect,
-                CornerRadius::same(radius),
-                Stroke::new(
-                    (1.0 * self.zoom).clamp(0.6, 1.4),
-                    color(self.palette.edge).gamma_multiply(0.55),
-                ),
-                StrokeKind::Inside,
-            );
+            if is_selected && selection > 0.0 {
+                painter.rect_filled(
+                    visual_rect.expand(4.0 * selection),
+                    CornerRadius::same(radius.saturating_add(3)),
+                    style::fade(self.tokens.halo(), selection),
+                );
+            } else if is_hovered && hover > 0.0 {
+                painter.rect_filled(
+                    visual_rect.expand(3.0 * hover),
+                    CornerRadius::same(radius.saturating_add(2)),
+                    style::fade(self.tokens.halo(), hover * 0.6),
+                );
+            }
 
-            if self.selected.as_ref() == Some(&node.id) {
+            painter.rect_filled(visual_rect, corner, fill);
+            if appear > 0.15 {
                 painter.rect_stroke(
-                    screen_rect.expand(2.5),
+                    visual_rect,
+                    corner,
+                    Stroke::new(
+                        1.0,
+                        style::fade(style::mix(base_fill, self.tokens.text, 0.16), appear),
+                    ),
+                    StrokeKind::Inside,
+                );
+            }
+
+            if is_selected && selection > 0.0 {
+                painter.rect_stroke(
+                    visual_rect.expand(1.0 + selection),
                     CornerRadius::same(radius.saturating_add(1)),
-                    Stroke::new(2.0, color(self.palette.accent)),
-                    StrokeKind::Middle,
+                    Stroke::new(
+                        (1.2 + 0.8 * selection).min(2.0),
+                        style::with_alpha(self.tokens.accent, (255.0 * selection) as u8),
+                    ),
+                    StrokeKind::Outside,
                 );
             }
 
@@ -1138,23 +1432,28 @@ impl MappamenteApp {
                 .editing
                 .as_ref()
                 .is_some_and(|state| state.id == node.id);
-            if text_size >= 5.0 && !editing_this {
+            if text_size >= 5.0 && !editing_this && appear > 0.05 {
+                let font_id = FontId::proportional(text_size);
+                let row_height = context.fonts_mut(|fonts| fonts.row_height(&font_id));
+                let pad_x = 14.0;
+                let text_block_height = node.lines.len() as f32 * row_height;
+                let top_y = node.rect.y + (node.rect.h - text_block_height) / 2.0;
                 for (index, line) in node.lines.iter().enumerate() {
                     if line.is_empty() {
                         continue;
                     }
                     let position = self.to_screen(
                         mappamente_core::Point::new(
-                            node.rect.x + 14.0,
-                            node.rect.y + 9.0 + index as f32 * LINE_HEIGHT,
+                            node.rect.x + pad_x,
+                            top_y + index as f32 * row_height + row_height * 0.5,
                         ),
                         viewport,
                     );
                     painter.text(
                         position,
-                        Align2::LEFT_TOP,
+                        Align2::LEFT_CENTER,
                         line,
-                        FontId::proportional(text_size),
+                        font_id.clone(),
                         text_color,
                     );
                 }
@@ -1168,21 +1467,89 @@ impl MappamenteApp {
                 painter.circle_filled(
                     position,
                     (4.0 * self.zoom).clamp(1.5, 5.0),
-                    text_color.gamma_multiply(0.75),
+                    style::fade(style::mix(base_fill, base_text, 0.75), appear),
                 );
             }
         }
     }
 
-    fn fit(&mut self, viewport: egui::Rect) {
+    fn begin_fit(&mut self, context: &egui::Context, viewport: egui::Rect) {
         let bounds = self.layout.bounds;
         let width = bounds.w.max(1.0);
         let height = bounds.h.max(1.0);
-        let margin = 80.0;
+        let margin = 96.0;
         let scale_x = (viewport.width() - margin * 2.0).max(20.0) / width;
         let scale_y = (viewport.height() - margin * 2.0).max(20.0) / height;
-        self.zoom = scale_x.min(scale_y).clamp(0.02, 3.0);
-        self.view_center = bounds.center();
+        let zoom = scale_x.min(scale_y).clamp(0.02, 3.0);
+        let center = bounds.center();
+        if self.prefs.animations
+            && ((zoom - self.zoom).abs() > 0.001
+                || (center.x - self.view_center.x).abs() > 0.5
+                || (center.y - self.view_center.y).abs() > 0.5)
+        {
+            self.fit_animation = Some(FitAnimation {
+                start_time: context.input(|input| input.time),
+                from_zoom: self.zoom,
+                to_zoom: zoom,
+                from_center: self.view_center,
+                to_center: center,
+            });
+            context.request_repaint();
+        } else {
+            self.fit_animation = None;
+            self.zoom = zoom;
+            self.view_center = center;
+        }
+    }
+
+    fn update_fit_animation(&mut self, context: &egui::Context) {
+        let Some(animation) = &self.fit_animation else {
+            return;
+        };
+        let elapsed = context.input(|input| input.time) - animation.start_time;
+        let duration = f64::from(style::ANIMATION_TIME) * 1.35;
+        let progress = (elapsed / duration).clamp(0.0, 1.0) as f32;
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        self.zoom = animation.from_zoom + (animation.to_zoom - animation.from_zoom) * eased;
+        self.view_center = mappamente_core::Point::new(
+            animation.from_center.x + (animation.to_center.x - animation.from_center.x) * eased,
+            animation.from_center.y + (animation.to_center.y - animation.from_center.y) * eased,
+        );
+        if progress >= 1.0 {
+            self.fit_animation = None;
+        } else {
+            context.request_repaint();
+        }
+    }
+
+    fn track_node_births(&mut self, now: f64) {
+        if !self.nodes_initialized {
+            self.known_nodes = self
+                .layout
+                .nodes
+                .iter()
+                .map(|node| node.id.clone())
+                .collect();
+            self.nodes_initialized = true;
+        } else if self.prefs.animations {
+            for node in &self.layout.nodes {
+                if !self.known_nodes.contains(&node.id) {
+                    self.known_nodes.insert(node.id.clone());
+                    self.node_birth.insert(node.id.clone(), now);
+                }
+            }
+        }
+        self.node_birth.retain(|_, at| now - *at < 0.35);
+    }
+
+    fn node_alpha(&self, id: &str, now: f64) -> f32 {
+        if !self.prefs.animations {
+            return 1.0;
+        }
+        let Some(birth) = self.node_birth.get(id) else {
+            return 1.0;
+        };
+        ((now - birth) / f64::from(style::ANIMATION_TIME)).clamp(0.0, 1.0) as f32
     }
 
     fn world_at(&self, screen: egui::Pos2, viewport: egui::Rect) -> mappamente_core::Point {
@@ -1248,23 +1615,29 @@ impl eframe::App for MappamenteApp {
             self.load(path);
         }
 
-        self.top_bar(ui);
-        self.bottom_bar(ui);
         if self.ai_open {
-            let action = {
+            let tokens = self.tokens;
+            let response = {
                 let map = self.editor.map();
                 egui::Panel::right("mappamente_ai")
                     .resizable(true)
                     .default_size(380.0)
                     .min_size(320.0)
                     .max_size(560.0)
-                    .show(ui, |ui| self.ai.ui(ui, map))
-                    .inner
+                    .frame(
+                        egui::Frame::default()
+                            .fill(tokens.bg)
+                            .stroke(Stroke::new(1.0, tokens.border))
+                            .inner_margin(egui::Margin::symmetric(14, 12)),
+                    )
+                    .show(ui, |ui| self.ai.ui(ui, map, &tokens))
             };
-            if let Some(action) = action {
+            self.ai_width = response.response.rect.width();
+            if let Some(action) = response.inner {
                 self.handle_ai_action(action);
             }
         }
+        self.toolbar(ui);
         self.canvas(ui);
         self.update_window_title(ui.ctx());
     }
@@ -1274,12 +1647,12 @@ fn compute_layout(map: &MindMap, kind: LayoutKind) -> Layout {
     Layout::compute_with(map, kind, Metrics::default(), LayoutOptions::default())
 }
 
-fn collect_colors(map: &MindMap) -> HashMap<String, String> {
-    fn walk(node: &Node, out: &mut HashMap<String, String>) {
-        if let Some(color) = &node.color
-            && parse_hex(color).is_some()
+fn collect_colors(map: &MindMap) -> HashMap<String, Color32> {
+    fn walk(node: &Node, out: &mut HashMap<String, Color32>) {
+        if let Some(value) = &node.color
+            && let Some([r, g, b, a]) = parse_hex(value)
         {
-            out.insert(node.id.clone(), color.clone());
+            out.insert(node.id.clone(), Color32::from_rgba_unmultiplied(r, g, b, a));
         }
         for child in &node.children {
             walk(child, out);
@@ -1287,6 +1660,22 @@ fn collect_colors(map: &MindMap) -> HashMap<String, String> {
     }
     let mut out = HashMap::with_capacity(map.node_count());
     walk(&map.root, &mut out);
+    out
+}
+
+/// Maps every node to the index of its first-level branch.
+fn collect_branches(map: &MindMap) -> HashMap<String, usize> {
+    fn walk(node: &Node, branch: usize, out: &mut HashMap<String, usize>) {
+        for child in &node.children {
+            out.insert(child.id.clone(), branch);
+            walk(child, branch, out);
+        }
+    }
+    let mut out = HashMap::with_capacity(map.node_count());
+    for (branch, child) in map.root.children.iter().enumerate() {
+        out.insert(child.id.clone(), branch);
+        walk(child, branch, &mut out);
+    }
     out
 }
 
@@ -1304,6 +1693,15 @@ fn layout_name(kind: LayoutKind) -> &'static str {
         LayoutKind::Radial => "Radial",
         LayoutKind::Logical => "Logical",
     }
+}
+
+fn truncate(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 fn sanitize_file_name(title: &str) -> String {
@@ -1347,35 +1745,9 @@ fn control_points(
     }
 }
 
-fn cubic_point(
-    p0: egui::Pos2,
-    p1: egui::Pos2,
-    p2: egui::Pos2,
-    p3: egui::Pos2,
-    t: f32,
-) -> egui::Pos2 {
-    let u = 1.0 - t;
-    egui::pos2(
-        u * u * u * p0.x + 3.0 * u * u * t * p1.x + 3.0 * u * t * t * p2.x + t * t * t * p3.x,
-        u * u * u * p0.y + 3.0 * u * u * t * p1.y + 3.0 * u * t * t * p2.y + t * t * t * p3.y,
-    )
-}
-
-fn color(hex: &str) -> Color32 {
-    color_hex(hex)
-}
-
-fn color_hex(hex: &str) -> Color32 {
-    if let Some([r, g, b, a]) = parse_hex(hex) {
-        Color32::from_rgba_unmultiplied(r, g, b, a)
-    } else {
-        Color32::GRAY
-    }
-}
-
-fn welcome_map() -> MindMap {
+fn welcome_map(theme: &str) -> MindMap {
     let mut map = MindMap::new("Welcome to Mappamente", "Mappamente");
-    map.theme = "light".to_owned();
+    map.theme = theme.to_owned();
     map.layout = LayoutKind::Tree;
 
     let root = map.root.id.clone();
@@ -1551,5 +1923,42 @@ mod tests {
         assert!(is_descendant(&map, &map.root.id, &child));
         assert!(is_descendant(&map, &child, &grandchild));
         assert!(!is_descendant(&map, &grandchild, &child));
+    }
+
+    #[test]
+    fn branches_follow_first_level_ancestors() {
+        let mut map = MindMap::new("Test", "Root");
+        let root = map.root.id.clone();
+        let first = map.add_child(&root, "First").unwrap();
+        let first_child = map.add_child(&first, "First child").unwrap();
+        let second = map.add_child(&root, "Second").unwrap();
+        let second_child = map.add_child(&second, "Second child").unwrap();
+        let branches = collect_branches(&map);
+        assert_eq!(branches.get(&first), Some(&0));
+        assert_eq!(branches.get(&first_child), Some(&0));
+        assert_eq!(branches.get(&second), Some(&1));
+        assert_eq!(branches.get(&second_child), Some(&1));
+        assert!(!branches.contains_key(&root));
+    }
+
+    #[test]
+    fn explicit_node_colors_are_parsed() {
+        let mut map = MindMap::new("Test", "Root");
+        let child = map.add_child(&map.root.id.clone(), "Child").unwrap();
+        map.set_color(&child, Some("#112233")).unwrap();
+        let colors = collect_colors(&map);
+        assert_eq!(
+            colors.get(&child),
+            Some(&Color32::from_rgb(0x11, 0x22, 0x33))
+        );
+    }
+
+    #[test]
+    fn long_status_names_are_truncated() {
+        assert_eq!(truncate("demo.mappa", 34), "demo.mappa");
+        let long = "a".repeat(40);
+        let short = truncate(&long, 10);
+        assert_eq!(short.chars().count(), 10);
+        assert!(short.ends_with('…'));
     }
 }

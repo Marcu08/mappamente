@@ -54,7 +54,33 @@ impl Palette {
 
     /// All names accepted by [`Palette::by_name`].
     pub const NAMES: [&'static str; 4] = ["dark", "light", "paper", "ocean"];
+
+    /// One distinct hue per first-level branch.
+    #[must_use]
+    pub fn branch_fills(&self) -> [&'static str; 8] {
+        if self.is_dark() {
+            DARK_BRANCH_FILLS
+        } else {
+            LIGHT_BRANCH_FILLS
+        }
+    }
+
+    /// Whether surfaces of this palette are dark.
+    #[must_use]
+    pub fn is_dark(&self) -> bool {
+        matches!(self.name, "dark" | "ocean")
+    }
 }
+
+/// Branch hues for light and paper themes.
+pub const LIGHT_BRANCH_FILLS: [&str; 8] = [
+    "#4f46e5", "#0d9488", "#d97706", "#e11d48", "#0284c7", "#7c3aed", "#16a34a", "#ea580c",
+];
+
+/// Branch hues for dark and ocean themes.
+pub const DARK_BRANCH_FILLS: [&str; 8] = [
+    "#818cf8", "#2dd4bf", "#fbbf24", "#fb7185", "#38bdf8", "#a78bfa", "#4ade80", "#fb923c",
+];
 
 pub const DARK: Palette = Palette {
     name: "dark",
@@ -122,14 +148,16 @@ pub fn parse_hex(value: &str) -> Option<[u8; 4]> {
     Some([r, g, b, a])
 }
 
-/// Whether a color is light enough to need dark text on top of it.
+/// Whether a color needs dark text on top for the best contrast.
 #[must_use]
 pub fn is_light_color(value: &str) -> bool {
     let Some([r, g, b, _]) = parse_hex(value) else {
         return false;
     };
-    let luminance = (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0;
-    luminance > 0.6
+    let luminance = relative_luminance(r, g, b);
+    let white_contrast = 1.05 / (luminance + 0.05);
+    let black_contrast = (luminance + 0.05) / 0.05;
+    black_contrast >= white_contrast
 }
 
 /// Best readable text color (`#111827` or `#ffffff`) for a background.
@@ -139,6 +167,40 @@ pub fn readable_text(value: &str) -> &'static str {
         "#111827"
     } else {
         "#ffffff"
+    }
+}
+
+fn relative_luminance(r: u8, g: u8, b: u8) -> f32 {
+    let channel = |value: u8| {
+        let value = f32::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// Blends two hex colors; `amount` 0 keeps `a`, 1 returns `b`.
+#[must_use]
+pub fn mix_hex(a: &str, b: &str, amount: f32) -> Option<String> {
+    let [ar, ag, ab, aa] = parse_hex(a)?;
+    let [br, bg, bb, ba] = parse_hex(b)?;
+    let amount = amount.clamp(0.0, 1.0);
+    let channel = |left: u8, right: u8| {
+        (f32::from(left) + (f32::from(right) - f32::from(left)) * amount).round() as u8
+    };
+    let (r, g, bl, alpha) = (
+        channel(ar, br),
+        channel(ag, bg),
+        channel(ab, bb),
+        channel(aa, ba),
+    );
+    if alpha == 255 {
+        Some(format!("#{r:02x}{g:02x}{bl:02x}"))
+    } else {
+        Some(format!("#{r:02x}{g:02x}{bl:02x}{alpha:02x}"))
     }
 }
 
@@ -188,9 +250,30 @@ mod tests {
         assert_eq!(parse_hex("#ff8000"), Some([255, 128, 0, 255]));
         assert_eq!(parse_hex("#00000080"), Some([0, 0, 0, 128]));
         assert_eq!(parse_hex("nope"), None);
-        assert!(!is_light_color("#4f8cff"));
+        assert!(is_light_color("#4f8cff"));
+        assert!(is_light_color("#d97706"));
+        assert!(!is_light_color("#0e1014"));
         assert!(is_light_color("#f7f8fb"));
         assert_eq!(readable_text("#f7f8fb"), "#111827");
+        assert_eq!(readable_text("#d97706"), "#111827");
         assert_eq!(readable_text("#0e1014"), "#ffffff");
+    }
+
+    #[test]
+    fn branch_and_mix_helpers_are_shared() {
+        assert!(Palette::by_name("light").branch_fills().len() == 8);
+        assert_ne!(
+            Palette::by_name("light").branch_fills()[0],
+            Palette::by_name("dark").branch_fills()[0]
+        );
+        assert_eq!(
+            mix_hex("#000000", "#ffffff", 0.0),
+            Some("#000000".to_owned())
+        );
+        assert_eq!(
+            mix_hex("#000000", "#ffffff", 1.0),
+            Some("#ffffff".to_owned())
+        );
+        assert_eq!(mix_hex("nope", "#ffffff", 0.5), None);
     }
 }

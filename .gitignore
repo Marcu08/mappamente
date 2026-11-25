@@ -1,4 +1,6 @@
 /target
+/Mappamente.exe
+/Mappamente.lnk
 **/*.rs.bk
 *.tmp
 .DS_Store

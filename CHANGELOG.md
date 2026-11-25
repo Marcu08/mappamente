@@ -2,6 +2,28 @@
 
 All notable changes to Mappamente are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Core: transactional `MindMap::edit`, `outline_with_ids`, Markdown subtree
+  insertion with fresh ids, JSON migration hook and a 5 MiB map-file limit.
+- `mappamente-mcp`: stdio MCP server with sandboxed `--dir`, ten map tools,
+  optimistic concurrency via `modified_at`/`expected_modified_at`, atomic
+  writes and tool-level errors.
+- AI assistant side panel with OpenAI, Anthropic, OpenCode Console/local,
+  OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI, Ollama, LM Studio and custom
+  OpenAI-compatible providers. Keys use the OS keyring with environment
+  fallbacks; returned JSON actions are applied to the live canvas in one undo
+  step.
+- README, file-format, architecture and decision documentation updates.
+
+### Changed
+
+- Release profile no longer aborts on panic, so the long-running MCP server and
+  future tool loops can unwind.
+- 146 tests, including local mock HTTP coverage for all three AI protocols.
+
 ## [0.1.0] - 2026-11-25
 
 First public version.

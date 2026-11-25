@@ -7,10 +7,75 @@
   core, but the canvas has no UI to edit them. Existing values are preserved.
 - No in-canvas collapse/expand toggle; collapsed branches imported from files
   render as collapsed.
-- MCP server and AI panel are not implemented.
+- The MCP server and AI panel are implemented, but MCP live reload is not.
 - OPML, FreeMind and PNG/PDF export are not implemented.
 - Cross-links (`links`) are reserved and validated but never rendered.
 - Single-window only; opening a second file starts a second process.
+
+## MCP server
+
+- stdio only: there is no HTTP/SSE transport, so clients must launch the binary.
+- No live reload: the GUI does not watch files yet; external MCP edits appear
+  after reopening the map.
+- `expected_modified_at` is optional. Omitting it means last-write-wins; two
+  concurrent writers can still overwrite each other.
+- Map names are simple file names inside `--dir`; subdirectories are not
+  addressable. Windows device names and names with trailing dots/spaces are
+  rejected on every platform to keep behavior portable.
+- `list_maps` loads every map to read its metadata, so it costs O(total map
+  size) per call.
+- Link tools are intentionally absent. Existing `links` are preserved on save
+  but are not exposed to clients.
+- Export supports SVG, Markdown and native JSON only; there is no PNG/PDF.
+- The trust model is local: anyone who can launch the server can edit every map
+  in `--dir`. Do not point it at a sensitive directory.
+- The store rejects existing files that canonicalize outside the root and
+  refuses symlinked export targets, but it does not attempt to defend against a
+  hostile process racing filesystem changes between check and write.
+
+## AI assistant
+
+- **No token streaming:** the reply is parsed and applied after the provider
+  response completes. The canvas updates immediately at that point, but text and
+  actions do not appear progressively.
+- **No native tool calls:** providers are not given function/tool schemas. The
+  model must return the documented JSON object; malformed JSON is shown as an
+  error and leaves the map unchanged.
+- **No retry or cancel:** requests have a 120-second timeout, and the send
+  button is disabled until the worker returns. Closing the panel does not cancel
+  the request.
+- **Context limit:** maps whose outline exceeds 120,000 characters are refused;
+  they are never truncated silently. The limit covers the map outline, not the
+  full request, so a long chat can still hit a provider context window and
+  return an error.
+- **UI work:** very large valid action plans are validated and applied on the UI
+  thread after the response arrives; this can briefly stall rendering.
+- **History is in-memory:** chat turns are not persisted across restarts, and
+  only the last 12 user/assistant messages are sent as context. The selected
+  provider/model/base URL also reset to preset defaults on launch (keys persist
+  in the keyring).
+- **Action coverage:** AI actions can edit text, notes, colors, collapsed state,
+  structure, layout, title and theme. Manual positions, cross-links, export and
+  file open/save are not AI actions.
+- **One undo step:** the whole turn is atomic. If any action is invalid, no
+  action from that turn is applied.
+- **Keys:** the keyring may be unavailable on headless Linux or locked
+  desktops; the environment variable remains the fallback. Saving a key can
+  prompt the OS credential UI.
+- **Privacy:** the current map outline and chat context are sent to the selected
+  provider. Remote HTTP is rejected, but the provider's own retention policy
+  applies.
+- **OpenCode local:** uses the experimental
+  `/api/experimental/generate/text` route, the default `opencode serve` port
+  4096, and optional Basic auth (`opencode` + `OPENCODE_PASSWORD`). The route or
+  port may change between OpenCode versions; both are editable.
+- **Provider defaults age:** model ids and endpoints in the presets are starting
+  points and may be deprecated; the model and base URL fields are editable.
+- **Architecture debt:** MCP file tools and AI actions are separate handlers;
+  the shared registry from decision D3 is not implemented yet.
+- **Build cost:** `reqwest` with rustls/aws-lc and `keyring` add a noticeable
+  first-build time (roughly several minutes on Windows), although runtime
+  overhead is small.
 
 ## Packaging and shortcut
 
@@ -49,8 +114,17 @@
 
 ## Testing
 
-- 88 tests: 75 core unit, 2 core integration, 4 library unit (CLI + GUI
-  helpers), 7 CLI integration. Doc tests: 0.
+- 146 tests: 90 core unit, 2 core integration, 6 library unit (CLI/GUI/AI
+  panel), 7 CLI integration, 11 MCP unit, 2 MCP stdio integration, 24 AI unit,
+  4 AI HTTP tests. Doc tests: 0.
+- AI HTTP tests run a local `TcpListener` mock and verify OpenAI-compatible,
+  Anthropic and OpenCode-local request paths, auth headers, bodies and response
+  parsing without external network access.
+- The AI panel unit test starts the real worker thread against a local mock,
+  parses the plan and applies it to a live `MindMap`.
+- The MCP stdio integration test spawns the real binary, performs the initialize
+  handshake, lists the ten tools and exercises create/add/subtree/update/layout/
+  export/delete plus sandbox, missing-map and stale-token errors.
 - The 1,111-node layout test has a generous 5-second guard in debug builds; it
   is not a micro-benchmark. Release layout measured at ~3 ms on this machine.
 - GUI flows were smoke-tested manually with DPI-aware mouse/keyboard automation

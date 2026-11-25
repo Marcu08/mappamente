@@ -25,7 +25,9 @@ Repository: <https://github.com/Marcu08/mappamente>
 - GUI: `eframe`/`egui` 0.37.
 - CLI: `clap` 4.6 derive, `anyhow`.
 - Dialogs: `rfd` 0.18 (xdg-portal on Linux).
-- Planned MCP: `rmcp` 3.x over stdio.
+- MCP: `rmcp` 3.11 (`macros`, `server`, `transport-io`), `tokio` 1.54,
+  `schemars` 1.2 over stdio.
+- AI: `reqwest` 0.13 blocking with rustls, `keyring` 4.2, `mappamente-ai` crate.
 - Planned AI: `reqwest` (rustls), `keyring`, OpenAI-compatible + Anthropic
   adapters.
 
@@ -35,15 +37,18 @@ Repository: <https://github.com/Marcu08/mappamente>
 Cargo.toml                     workspace
 crates/mappamente-core/        headless core (implemented)
 crates/mappamente/             lib + mappamente.exe (CLI) + mappamente-desktop.exe
+crates/mappamente-mcp/         stdio MCP server (mappamente-mcp.exe)
+crates/mappamente-ai/          AI providers, credentials and JSON map actions
 assets/                        icon.png, mappamente.ico
 scripts/install-shortcut.ps1   Desktop/Start Menu shortcut
 docs/                          demo map, screenshots, format and CLI docs
 .github/workflows/ci.yml       fmt, clippy -D warnings, tests on 3 OSes
 ```
 
-## Status (2026-11-25) — v0.1.0
+## Status (2026-11-25) — v0.1.0 plus unreleased work
 
-Milestones 1–3 complete:
+Milestones 1–3, the external-use changes, the MCP server and the AI panel are
+complete in the working tree:
 
 - core model, JSON, layouts, undo/redo, validation, tests;
 - Markdown outline import/export, SVG export with four themes;
@@ -52,9 +57,20 @@ Milestones 1–3 complete:
   move/reparent, undo/redo, layout/theme switching persisted, open/save/save-as,
   drag & drop, unsaved-change guard, custom window icon;
 - Desktop shortcut `Mappamente.lnk` created via `scripts/install-shortcut.ps1`;
-- 88 tests, CI for three operating systems, dual license.
+- transactional `MindMap::edit`, `outline_with_ids`, Markdown subtree insertion,
+  JSON migration hook, 5 MiB map-file limit;
+- `mappamente-mcp`: stdio MCP server with ten tools, sandboxed `--dir`,
+  optimistic concurrency and tool-level errors;
+- `mappamente-ai` + `ai_panel.rs`: provider presets (OpenAI, Anthropic,
+  OpenCode Console/local, OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI,
+  Ollama, LM Studio, custom), OS-keyring keys with env fallback, JSON action
+  protocol and live canvas updates in one undo step;
+- 146 tests, CI for three operating systems, dual license.
 
-Next: autosave and richer node metadata, then OPML/FreeMind, MCP and AI.
+Known architecture debt: MCP file tools and AI actions are still separate; the
+shared tool registry from D3 is pending.
+
+Next: MCP live reload, then OPML/FreeMind, autosave and a shared tool registry.
 
 ## Commands
 
@@ -65,6 +81,12 @@ cargo fmt --all -- --check
 cargo build --release
 ```
 
+MCP smoke run:
+
+```powershell
+cargo run -p mappamente-mcp -- --dir .\docs
+```
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/install-shortcut.ps1
 ```
@@ -73,7 +95,7 @@ This workspace's environment has an empty `CARGO_TARGET_DIR`, which makes cargo
 fail. Set it explicitly when running commands in this session:
 
 ```powershell
-$env:CARGO_TARGET_DIR = "C:\Users\marzu\OneDrive\Desktop\app_mappe\target"
+$env:CARGO_TARGET_DIR = "<workspace>\target"
 ```
 
 For Windows UI smoke tests, make the PowerShell thread DPI-aware before calling

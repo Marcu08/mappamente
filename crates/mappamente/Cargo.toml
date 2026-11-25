@@ -24,9 +24,11 @@ path = "src/bin/mappamente_desktop.rs"
 anyhow.workspace = true
 clap.workspace = true
 eframe.workspace = true
+mappamente-ai = { path = "../mappamente-ai" }
 mappamente-core = { path = "../mappamente-core" }
 rfd.workspace = true
 
 [dev-dependencies]
 fastrand.workspace = true
 roxmltree.workspace = true
+serde_json.workspace = true

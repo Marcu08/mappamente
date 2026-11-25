@@ -1,0 +1,20 @@
+[package]
+name = "mappamente-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Provider clients and map actions for the Mappamente AI assistant"
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+keyring.workspace = true
+mappamente-core = { path = "../mappamente-core" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# No extra dev-dependencies yet; tests use std::net for HTTP mocks.

@@ -13,11 +13,14 @@ use eframe::egui::{
     self, Align, Align2, Color32, ComboBox, CornerRadius, FontId, Key, Modifiers, RichText, Sense,
     Stroke, StrokeKind,
 };
+use mappamente_ai::apply_actions;
 use mappamente_core::Editor;
 use mappamente_core::io;
 use mappamente_core::layout::{Layout, LayoutNode, LayoutOptions, Metrics};
 use mappamente_core::model::{LayoutKind, MindMap, Node, NodeId};
 use mappamente_core::theme::{Palette, parse_hex};
+
+use crate::ai_panel::{AiPanel, AiPanelAction};
 
 const APP_NAME: &str = "Mappamente";
 const NODE_FONT: f32 = 15.0;
@@ -85,6 +88,8 @@ struct MappamenteApp {
     drag: Option<DragState>,
     window_title: String,
     allow_close: bool,
+    ai: AiPanel,
+    ai_open: bool,
 }
 
 impl MappamenteApp {
@@ -127,6 +132,8 @@ impl MappamenteApp {
             drag: None,
             window_title: String::new(),
             allow_close: false,
+            ai: AiPanel::new(),
+            ai_open: false,
         }
     }
 
@@ -342,6 +349,37 @@ impl MappamenteApp {
         }
     }
 
+    fn handle_ai_action(&mut self, action: AiPanelAction) {
+        match action {
+            AiPanelAction::Apply { reply, plan } => {
+                self.commit_editing();
+                if plan.actions.is_empty() {
+                    self.ai.finish(reply, 0);
+                    return;
+                }
+                match self
+                    .editor
+                    .apply("AI edit", |map| apply_actions(map, &plan.actions))
+                {
+                    Ok(summary) => {
+                        self.error = None;
+                        self.drag = None;
+                        if let Some(id) = summary.node_ids.first() {
+                            self.selected = Some(id.clone());
+                        }
+                        self.after_change();
+                        self.ai.finish(reply, summary.applied);
+                    }
+                    Err(error) => {
+                        let message = format!("L'AI ha proposto modifiche non valide: {error}");
+                        self.error = Some(message.clone());
+                        self.ai.fail(reply, message);
+                    }
+                }
+            }
+        }
+    }
+
     fn start_editing(&mut self, id: NodeId, is_new: bool) {
         self.commit_editing();
         let Some(text) = self.map().find(&id).map(|node| node.text.clone()) else {
@@ -498,7 +536,7 @@ impl MappamenteApp {
     }
 
     fn handle_keys(&mut self, context: &egui::Context) {
-        if self.editing.is_some() {
+        if self.editing.is_some() || context.egui_wants_keyboard_input() {
             return;
         }
 
@@ -507,6 +545,12 @@ impl MappamenteApp {
             shift: true,
             ..Default::default()
         };
+        if context.input_mut(|input| input.consume_key(command_shift, Key::A)) {
+            if !self.ai_open {
+                self.commit_editing();
+            }
+            self.ai_open = !self.ai_open;
+        }
         if context.input_mut(|input| input.consume_key(command_shift, Key::Z)) {
             self.redo();
         } else if context.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Z)) {
@@ -667,6 +711,13 @@ impl MappamenteApp {
                     }
                     if ui.button("Fit").clicked() {
                         self.fit_pending = true;
+                    }
+                    ui.separator();
+                    if ui.selectable_label(self.ai_open, "AI").clicked() {
+                        if !self.ai_open {
+                            self.commit_editing();
+                        }
+                        self.ai_open = !self.ai_open;
                     }
 
                     ui.separator();
@@ -1199,6 +1250,21 @@ impl eframe::App for MappamenteApp {
 
         self.top_bar(ui);
         self.bottom_bar(ui);
+        if self.ai_open {
+            let action = {
+                let map = self.editor.map();
+                egui::Panel::right("mappamente_ai")
+                    .resizable(true)
+                    .default_size(380.0)
+                    .min_size(320.0)
+                    .max_size(560.0)
+                    .show(ui, |ui| self.ai.ui(ui, map))
+                    .inner
+            };
+            if let Some(action) = action {
+                self.handle_ai_action(action);
+            }
+        }
         self.canvas(ui);
         self.update_window_title(ui.ctx());
     }

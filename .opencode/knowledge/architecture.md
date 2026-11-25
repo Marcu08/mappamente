@@ -5,14 +5,20 @@
 ### `mappamente-core` (implemented, no GUI dependencies)
 
 - `model` — `MindMap`, `Node`, `Link`, `LayoutKind`, short id generation, tree
-  operations, validation, outline rendering.
+  operations, validation, outline rendering. `MindMap::edit` applies a closure
+  to a clone, validates and touches it, then commits; failures leave the
+  document untouched. `outline_with_ids` adds stable ids and compact metadata
+  for tools.
 - `layout` — deterministic placement, text wrapping, metrics, manual offsets.
   `Tree` is bilateral, `Radial` spreads by leaf weight, `Logical` grows right.
   Layout depth equals document depth for all algorithms.
 - `history` — `Editor`, snapshot undo/redo, transactions, drag coalescing,
   dirty tracking by monotonic revision.
-- `io::json` — pretty stable JSON, validation, atomic save/load.
+- `io::json` — pretty stable JSON, `migrate` hook, validation, atomic save/load,
+  5 MiB input limit (`MAX_MAP_FILE_BYTES`).
 - `io::markdown` — title + indented bullet outline; exactly one root; lossy.
+  `insert_markdown_children` parses an outline, discards the parsed root when it
+  has children, and inserts the remaining subtrees with fresh ids.
   `io::load_path`/`save_path` dispatch by extension.
 - `export::svg` — standalone SVG, same layout/palettes as the GUI, escaped
   labels, shadows, wrapped text.
@@ -39,6 +45,41 @@
 The GUI and SVG renderer share the core layout and `Palette`, so exported maps
 match the canvas.
 
+### `mappamente-mcp` (stdio MCP server)
+
+- `store` — `MapStore` owns one canonical directory. Map names must be simple
+  `.mappa`/`.json` file names; existing paths are canonicalized and checked
+  against the root, so traversal and escaping symlinks are rejected. It exposes
+  list/load/create/add/update/move/delete/layout/export operations.
+- `server` — rmcp `#[tool_router]`/`#[tool_handler]` server with ten tools,
+  typed `schemars` inputs and structured JSON results. Domain errors become
+  `CallToolResult::error` with `{code, message}`; they never panic or turn into
+  protocol errors.
+- `main` — clap `--dir`, stderr diagnostics, tokio multi-thread runtime and the
+  rmcp stdio transport. stdout carries only JSON-RPC.
+- Mutations load, compare optional `expected_modified_at`, run a transactional
+  `MindMap::edit`, then save atomically. Text/note (10,000 chars), Markdown
+  (100,000 chars) and file size (5 MiB) limits are enforced before writing.
+
+### `mappamente-ai` (provider layer, no GUI)
+
+- `provider` — preset table (OpenAI, Anthropic, OpenCode Console/local,
+  OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI, Ollama, LM Studio, custom)
+  with protocol, default endpoint/model, key environment variable and key
+  requirement.
+- `client` — blocking `reqwest` clients for OpenAI-compatible
+  `/chat/completions`, Anthropic `/v1/messages` and OpenCode local
+  `/api/experimental/generate/text`. Validates URLs, enforces HTTPS for remote
+  hosts, applies timeouts and limited redirects, parses text/usage and truncates
+  provider errors. No key is logged.
+- `credential` — OS keyring (`keyring` 4.2) first, per-provider environment
+  variable fallback; save/clear operations are explicit.
+- `action` — `Plan`/`MapAction` JSON protocol: add node/tree/subtree, update,
+  move, delete, layout, title, theme. `apply_actions` resolves temporary ids,
+  enforces 10k/100k limits and returns created/changed ids. Callers run it inside
+  one `Editor::apply` transaction.
+- `prompt` — strict system prompt and map outline (120,000-character cap).
+
 ## GUI state and interaction
 
 `MappamenteApp` owns:
@@ -47,11 +88,23 @@ match the canvas.
 - view state: `kind`, `theme`, palette, zoom, view center, fit flag;
 - derived state: cached `Layout`, custom node colors;
 - interaction state: selected node, inline `EditingState`, `DragState`;
+- AI state: `AiPanel` (provider/model/base URL, key status, chat entries,
+  `mpsc` receiver) and panel visibility;
 - native window title and close guard.
 
 Document mutations always go through `Editor::apply` or `apply_coalesced`.
 `after_change` recomputes layout/colors, syncs `kind`/`theme` from the document,
 and prunes ids that disappeared after undo/delete.
+
+AI flow: `AiPanel` snapshots the map, builds the prompt, starts a plain worker
+thread with `reqwest::blocking`, and polls an `mpsc` channel from the UI. A
+parsed `Plan` is returned to the app, applied in one `Editor::apply("AI edit")`
+call, then `after_change` repaints the canvas. A failure is reported in the
+panel and leaves the document untouched.
+
+Keyboard shortcuts are skipped while a text widget has focus, so typing in the
+AI prompt, model or base-URL fields does not trigger canvas edits such as
+`Tab`/`Enter`/`Delete`.
 
 - **Inline edit**: double-click or `F2` opens a foreground `Area` over the node
   with a single-line `TextEdit`; Enter or focus loss commits, Escape cancels.
@@ -107,9 +160,11 @@ Discrete edits never coalesce with drags.
 
 `json::save` validates, serializes pretty JSON with a trailing newline, writes
 a temp file in the destination directory, `sync_all`s and renames over the
-target (retries on Windows). Loading validates schema version and invariants.
-Unknown fields are ignored for forward compatibility. Markdown and SVG are
-written through the same atomic helper.
+target (retries on Windows). Loading goes through `migrate`, validates schema
+version and invariants, and rejects files larger than 5 MiB. Unknown fields are
+ignored for forward compatibility. Markdown and SVG are written through the
+same atomic helper. AI provider keys live in the OS keyring or environment, not
+in `.mappa` files.
 
 ## CLI conventions
 
@@ -121,19 +176,24 @@ written through the same atomic helper.
 - `convert` supports Markdown, JSON and SVG; `render` is the dedicated SVG
   path with theme/layout/margin options.
 
-## Planned AI/MCP data flow
+## MCP and AI data flow
 
 ```
-external MCP client ──stdio──> mappamente mcp ──atomic writes──> .mappa
-                                                        │
-                                                  file watcher
-                                                        ▼
-                                                      GUI
-in-app AI panel ──tool calls──> shared tool registry ──> live document
-                                     ▲
-                               same schemas
+external MCP client ──stdio──> mappamente-mcp ──atomic writes──> .mappa
+                                      │
+                                sandboxed --dir
+                                      │
+                              (planned) file watcher
+                                      ▼
+                                    GUI
+in-app AI panel ──JSON plan──> mappamente-ai ──HTTPS──> provider
+                                      │
+                                Editor::apply (one undo step)
+                                      ▼
+                                live document
 ```
 
-The tool registry (planned `mappamente-core::tools` or a `mappamente-tools`
-crate) defines schemas once; `rmcp` and the AI function-calling loop consume the
-same definitions. The AI panel calls the handlers in-process, avoiding a socket.
+The MCP crate owns the file-based tools. The AI panel uses a separate in-memory
+action protocol for now; unifying both behind one registry remains the target
+from D3. External agents edit maps through atomic file writes; live reload is
+not implemented yet.

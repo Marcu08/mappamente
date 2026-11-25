@@ -1,0 +1,24 @@
+# Mappamente
+
+- Mind mapping, without the weight
+  - Think visually
+    - Branches on both sides
+    - Tree, radial and logical layouts
+    - Labels wrap automatically
+    - Edit in place
+  - Your files
+    - Readable JSON
+    - Atomic saves
+    - Git-friendly diffs
+  - Small and fast
+    - Native Rust
+    - No WebView
+    - Small binaries
+  - Open source
+    - MIT or Apache-2.0
+    - No telemetry
+    - Plain text forever
+  - Roadmap
+    - MCP server
+    - AI panel
+    - Installer

@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1204.0" height="624.0" viewBox="0 0 1204.0 624.0" role="img">
+<title>Mappamente</title>
+<defs><filter id="mappamente-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#000000" flood-opacity="0.12"/></filter></defs>
+<rect width="100%" height="100%" fill="#f7f8fb"/>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+<path d="M 605.7 283.0 C 691.5 283.0, 691.5 169.0, 777.4 169.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.2"/>
+<path d="M 854.4 131.0 C 922.0 131.0, 922.0 78.0, 989.6 78.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 876.0 142.1 C 906.0 142.1, 906.0 135.4, 936.0 135.4" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 876.0 160.6 C 906.0 160.6, 906.0 169.7, 936.0 169.7" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 846.9 169.0 C 904.0 169.0, 904.0 222.0, 961.1 222.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 676.0 329.3 C 706.0 329.3, 706.0 338.4, 736.0 338.4" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.2"/>
+<path d="M 872.1 330.0 C 904.1 330.0, 904.1 311.7, 936.0 311.7" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 876.0 349.0 C 906.0 349.0, 906.0 349.0, 936.0 349.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 876.0 367.9 C 906.0 367.9, 906.0 384.1, 936.0 384.1" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 593.5 341.0 C 675.4 341.0, 675.4 492.0, 757.4 492.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.2"/>
+<path d="M 820.0 500.3 C 878.0 500.3, 878.0 470.8, 936.0 470.8" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 820.0 511.0 C 878.0 511.0, 878.0 511.0, 936.0 511.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 820.0 521.9 C 878.0 521.9, 878.0 552.0, 936.0 552.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 480.4 283.0 C 433.9 283.0, 433.9 250.0, 387.5 250.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.2"/>
+<path d="M 280.0 215.5 C 246.0 215.5, 246.0 196.0, 212.0 196.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 280.0 231.0 C 246.0 231.0, 246.0 231.0, 212.0 231.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 280.0 245.0 C 239.6 245.0, 239.6 266.0, 199.2 266.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 478.9 341.0 C 431.7 341.0, 431.7 374.0, 384.4 374.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.2"/>
+<path d="M 272.0 377.3 C 236.2 377.3, 236.2 358.0, 200.4 358.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 272.0 393.0 C 242.0 393.0, 242.0 393.0, 212.0 393.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+<path d="M 272.0 408.4 C 234.9 408.4, 234.9 428.0, 197.8 428.0" stroke="#c3cbda" stroke-opacity="0.82" stroke-width="2.0"/>
+</g>
+<g>
+<rect x="448.0" y="283.0" width="228.0" height="58.0" rx="10.0" fill="#2f6fed" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="462.0" y="307.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#ffffff" xml:space="preserve">Mind mapping, without the</text>
+<text x="462.0" y="327.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#ffffff" xml:space="preserve">weight</text>
+</g>
+<g>
+<rect x="736.0" y="131.0" width="140.0" height="38.0" rx="10.0" fill="#eaf1ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="750.0" y="155.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Think visually</text>
+</g>
+<g>
+<rect x="936.0" y="40.0" width="204.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="64.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Branches on both sides</text>
+</g>
+<g>
+<rect x="936.0" y="94.0" width="220.0" height="58.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="118.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Tree, radial and logical</text>
+<text x="950.0" y="138.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">layouts</text>
+</g>
+<g>
+<rect x="936.0" y="168.0" width="228.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="192.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Labels wrap automatically</text>
+</g>
+<g>
+<rect x="936.0" y="222.0" width="132.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="246.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Edit in place</text>
+</g>
+<g>
+<rect x="736.0" y="330.0" width="140.0" height="38.0" rx="10.0" fill="#eaf1ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="750.0" y="354.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Small and fast</text>
+</g>
+<g>
+<rect x="936.0" y="276.0" width="116.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="300.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Native Rust</text>
+</g>
+<g>
+<rect x="936.0" y="330.0" width="108.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="354.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">No WebView</text>
+</g>
+<g>
+<rect x="936.0" y="384.0" width="140.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="408.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Small binaries</text>
+</g>
+<g>
+<rect x="736.0" y="492.0" width="84.0" height="38.0" rx="10.0" fill="#eaf1ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="750.0" y="516.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Roadmap</text>
+</g>
+<g>
+<rect x="936.0" y="438.0" width="108.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="462.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">MCP server</text>
+</g>
+<g>
+<rect x="936.0" y="492.0" width="92.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="516.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">AI panel</text>
+</g>
+<g>
+<rect x="936.0" y="546.0" width="100.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="950.0" y="570.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Installer</text>
+</g>
+<g>
+<rect x="280.0" y="212.0" width="108.0" height="38.0" rx="10.0" fill="#eaf1ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="294.0" y="236.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Your files</text>
+</g>
+<g>
+<rect x="80.0" y="158.0" width="132.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="94.0" y="182.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Readable JSON</text>
+</g>
+<g>
+<rect x="88.0" y="212.0" width="124.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="102.0" y="236.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Atomic saves</text>
+</g>
+<g>
+<rect x="40.0" y="266.0" width="172.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="54.0" y="290.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Git-friendly diffs</text>
+</g>
+<g>
+<rect x="272.0" y="374.0" width="116.0" height="38.0" rx="10.0" fill="#eaf1ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="286.0" y="398.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Open source</text>
+</g>
+<g>
+<rect x="48.0" y="320.0" width="164.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="62.0" y="344.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">MIT or Apache-2.0</text>
+</g>
+<g>
+<rect x="88.0" y="374.0" width="124.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="102.0" y="398.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">No telemetry</text>
+</g>
+<g>
+<rect x="40.0" y="428.0" width="172.0" height="38.0" rx="10.0" fill="#dce8ff" stroke="#c3cbda" stroke-opacity="0.28" stroke-width="1" filter="url(#mappamente-shadow)"/>
+<text x="54.0" y="452.6" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15.0" fill="#1b2333" xml:space="preserve">Plain text forever</text>
+</g>
+</svg>

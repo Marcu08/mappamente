@@ -1,0 +1,32 @@
+[package]
+name = "mappamente"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Mappamente editor, CLI and future MCP server"
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "mappamente"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mappamente"
+path = "src/main.rs"
+
+[[bin]]
+name = "mappamente-desktop"
+path = "src/bin/mappamente_desktop.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+eframe.workspace = true
+mappamente-core = { path = "../mappamente-core" }
+rfd.workspace = true
+
+[dev-dependencies]
+fastrand.workspace = true
+roxmltree.workspace = true

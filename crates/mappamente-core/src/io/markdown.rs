@@ -1,0 +1,304 @@
+//! Markdown outline import/export.
+//!
+//! The format is intentionally simple and LLM-friendly:
+//!
+//! ```markdown
+//! # Map title
+//!
+//! - Root
+//!   - First branch
+//!     - Detail
+//!   - Second branch
+//! ```
+//!
+//! Indentation is relative (two spaces, four spaces or tabs all work), bullet
+//! markers may be `-`, `*` or `+`, and the title is optional. Notes, colors and
+//! manual positions are not represented: this is a lossy interchange format.
+
+use crate::error::{Error, Result};
+use crate::model::{MindMap, Node};
+
+/// Renders a map as a Markdown outline.
+#[must_use]
+pub fn to_markdown(map: &MindMap) -> String {
+    let mut out = String::new();
+    let title = one_line(&map.title);
+    if !title.is_empty() {
+        out.push_str("# ");
+        out.push_str(&title);
+        out.push_str("\n\n");
+    }
+
+    fn walk(node: &Node, depth: usize, out: &mut String) {
+        for _ in 0..depth {
+            out.push_str("  ");
+        }
+        out.push('-');
+        let text = one_line(&node.text);
+        if !text.is_empty() {
+            out.push(' ');
+            out.push_str(&text);
+        }
+        out.push('\n');
+        for child in &node.children {
+            walk(child, depth + 1, out);
+        }
+    }
+
+    walk(&map.root, 0, &mut out);
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out.push('\n');
+    out
+}
+
+/// Parses a Markdown outline into a new map.
+///
+/// The first bullet becomes the root; deeper indentation creates children.
+/// Headings are only accepted before the outline and become the map title.
+/// If no heading is present, the root label is used as the title.
+pub fn from_markdown(text: &str) -> Result<MindMap> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut title: Option<String> = None;
+    let mut root: Option<Node> = None;
+    // Stack of (indent, path of child indexes from the root).
+    let mut stack: Vec<(usize, Vec<usize>)> = Vec::new();
+
+    for (line_index, raw_line) in text.split('\n').enumerate() {
+        let line_number = line_index + 1;
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let (indent, content) = split_indent(line);
+        if content.trim().is_empty() {
+            continue;
+        }
+
+        if content.starts_with('#') {
+            if root.is_some() {
+                return Err(Error::Parse(format!(
+                    "line {line_number}: headings must appear before the outline"
+                )));
+            }
+            if title.is_some() {
+                return Err(Error::Parse(format!(
+                    "line {line_number}: only one title heading is allowed"
+                )));
+            }
+            title = Some(content.trim_start_matches('#').trim().to_owned());
+            continue;
+        }
+
+        let Some(label) = bullet_label(content) else {
+            return Err(Error::Parse(format!(
+                "line {line_number}: expected a Markdown bullet (`- item`)"
+            )));
+        };
+
+        if root.is_none() {
+            root = Some(Node::new(label));
+            stack.push((indent, Vec::new()));
+            continue;
+        }
+
+        while stack
+            .last()
+            .is_some_and(|(top_indent, _)| *top_indent >= indent)
+        {
+            stack.pop();
+        }
+        let Some((_, parent_path)) = stack.last() else {
+            return Err(Error::Parse(format!(
+                "line {line_number}: a mind map has exactly one root bullet"
+            )));
+        };
+
+        let parent_path = parent_path.clone();
+        let root_node = root.as_mut().expect("root checked above");
+        let parent = node_at_mut(root_node, &parent_path);
+        let index = parent.children.len();
+        parent.children.push(Node::new(label));
+
+        let mut path = parent_path;
+        path.push(index);
+        stack.push((indent, path));
+    }
+
+    let root = root.ok_or_else(|| {
+        Error::Parse("the outline is empty: expected at least one `- item` line".to_owned())
+    })?;
+    let title = title.unwrap_or_else(|| {
+        let text = one_line(&root.text);
+        if text.is_empty() {
+            "Untitled map".to_owned()
+        } else {
+            text
+        }
+    });
+    let mut map = MindMap::new(title, "");
+    map.root = root;
+    map.touch();
+    map.validate()?;
+    Ok(map)
+}
+
+/// Splits a line into indentation columns and the remaining content.
+///
+/// Spaces count as one column, tabs advance to the next multiple of four.
+fn split_indent(line: &str) -> (usize, &str) {
+    let mut columns = 0;
+    let mut end = 0;
+    for (index, ch) in line.char_indices() {
+        match ch {
+            ' ' => columns += 1,
+            '\t' => columns += 4 - columns % 4,
+            _ => {
+                end = index;
+                return (columns, &line[end..]);
+            }
+        }
+        end = index + ch.len_utf8();
+    }
+    (columns, &line[end..])
+}
+
+/// Returns the label after a bullet marker, or `None` if the line is not a
+/// bullet.
+fn bullet_label(content: &str) -> Option<&str> {
+    let mut chars = content.chars();
+    let marker = chars.next()?;
+    if !matches!(marker, '-' | '*' | '+') {
+        return None;
+    }
+    match chars.next() {
+        None => Some(""),
+        Some(' ') | Some('\t') => Some(content[marker.len_utf8()..].trim()),
+        Some(_) => None,
+    }
+}
+
+fn node_at_mut<'a>(mut node: &'a mut Node, path: &[usize]) -> &'a mut Node {
+    for index in path {
+        node = &mut node.children[*index];
+    }
+    node
+}
+
+fn one_line(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut last_was_space = false;
+    for ch in text.chars() {
+        let ch = if ch == '\n' || ch == '\r' || ch == '\t' {
+            ' '
+        } else {
+            ch
+        };
+        if ch == ' ' {
+            if last_was_space {
+                continue;
+            }
+            last_was_space = true;
+        } else {
+            last_was_space = false;
+        }
+        output.push(ch);
+    }
+    output.trim().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::LayoutKind;
+
+    fn sample() -> MindMap {
+        let mut map = MindMap::new("Outline", "Root");
+        let root = map.root.id.clone();
+        let a = map.add_child(&root, "First branch").unwrap();
+        map.add_child(&a, "Detail").unwrap();
+        map.add_child(&root, "Second branch").unwrap();
+        map.set_layout(LayoutKind::Tree);
+        map
+    }
+
+    #[test]
+    fn export_and_import_roundtrip_the_tree() {
+        let map = sample();
+        let markdown = to_markdown(&map);
+        assert!(markdown.starts_with("# Outline\n\n- Root\n"));
+        let parsed = from_markdown(&markdown).unwrap();
+        assert_eq!(parsed.title, "Outline");
+        assert_eq!(parsed.outline(), map.outline());
+        assert_eq!(parsed.layout, LayoutKind::Radial);
+    }
+
+    #[test]
+    fn markers_tabs_and_windows_line_endings_work() {
+        let text = "# Title\r\n\r\n- Root\r\n\t* Child\r\n\t\t+ Grandchild\r\n  - Sibling\r\n";
+        let map = from_markdown(text).unwrap();
+        assert_eq!(map.title, "Title");
+        assert_eq!(
+            map.outline(),
+            "- Root\n  - Child\n    - Grandchild\n  - Sibling"
+        );
+    }
+
+    #[test]
+    fn deeper_indentation_creates_children() {
+        let map = from_markdown("- A\n    - B\n        - C\n").unwrap();
+        assert_eq!(map.outline(), "- A\n  - B\n    - C");
+    }
+
+    #[test]
+    fn missing_heading_uses_the_root_label() {
+        let map = from_markdown("- Central idea\n  - Branch\n").unwrap();
+        assert_eq!(map.title, "Central idea");
+        assert_eq!(map.root.text, "Central idea");
+    }
+
+    #[test]
+    fn empty_labels_are_preserved() {
+        let map = from_markdown("- Root\n  -\n").unwrap();
+        assert_eq!(map.root.children.len(), 1);
+        assert_eq!(map.root.children[0].text, "");
+        assert!(to_markdown(&map).contains("\n  -\n"));
+    }
+
+    #[test]
+    fn multiple_roots_are_rejected() {
+        let error = from_markdown("- First\n- Second\n").unwrap_err();
+        assert!(error.to_string().contains("exactly one root"));
+    }
+
+    #[test]
+    fn text_before_the_outline_is_rejected() {
+        let error = from_markdown("random text\n- Root\n").unwrap_err();
+        assert!(error.to_string().contains("expected a Markdown bullet"));
+    }
+
+    #[test]
+    fn headings_after_the_outline_are_rejected() {
+        let error = from_markdown("- Root\n# Late title\n").unwrap_err();
+        assert!(error.to_string().contains("before the outline"));
+    }
+
+    #[test]
+    fn empty_input_is_rejected() {
+        assert!(from_markdown(" \n\n").is_err());
+        assert!(from_markdown("# Only a title\n").is_err());
+    }
+
+    #[test]
+    fn multiline_labels_are_flattened() {
+        let mut map = MindMap::new("Title", "Root");
+        let root = map.root.id.clone();
+        map.add_child(&root, "line one\nline two").unwrap();
+        let markdown = to_markdown(&map);
+        assert!(markdown.contains("- line one line two"));
+        assert!(!markdown.contains("line one\nline two"));
+    }
+
+    #[test]
+    fn double_markers_are_not_bullets() {
+        assert!(from_markdown("- Root\n--not-a-child\n").is_err());
+    }
+}

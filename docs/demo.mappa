@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "id": "m_jk9yde5b",
+  "title": "Mappamente",
+  "theme": "light",
+  "layout": "tree",
+  "created_at": 1795601546408,
+  "modified_at": 1795601546408,
+  "root": {
+    "id": "n_gzkmwthr",
+    "text": "Mind mapping, without the weight",
+    "children": [
+      {
+        "id": "n_25q000st",
+        "text": "Think visually",
+        "children": [
+          {
+            "id": "n_2sw975cd",
+            "text": "Branches on both sides",
+            "children": []
+          },
+          {
+            "id": "n_d08mr1t6",
+            "text": "Tree, radial and logical layouts",
+            "children": []
+          },
+          {
+            "id": "n_z7j39s39",
+            "text": "Labels wrap automatically",
+            "children": []
+          },
+          {
+            "id": "n_2t956ssm",
+            "text": "Edit in place",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "n_d5gkcysm",
+        "text": "Your files",
+        "children": [
+          {
+            "id": "n_77r9ch74",
+            "text": "Readable JSON",
+            "children": []
+          },
+          {
+            "id": "n_j783vt2x",
+            "text": "Atomic saves",
+            "children": []
+          },
+          {
+            "id": "n_v7xk8zth",
+            "text": "Git-friendly diffs",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "n_rs06q52j",
+        "text": "Small and fast",
+        "children": [
+          {
+            "id": "n_qtt4tv31",
+            "text": "Native Rust",
+            "children": []
+          },
+          {
+            "id": "n_edw0jvyk",
+            "text": "No WebView",
+            "children": []
+          },
+          {
+            "id": "n_87w3807e",
+            "text": "Small binaries",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "n_x18k09a5",
+        "text": "Open source",
+        "children": [
+          {
+            "id": "n_aehr3aq8",
+            "text": "MIT or Apache-2.0",
+            "children": []
+          },
+          {
+            "id": "n_sgbp96rk",
+            "text": "No telemetry",
+            "children": []
+          },
+          {
+            "id": "n_a3t86sak",
+            "text": "Plain text forever",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "n_z77k1j54",
+        "text": "Roadmap",
+        "children": [
+          {
+            "id": "n_w1hqa8g8",
+            "text": "MCP server",
+            "children": []
+          },
+          {
+            "id": "n_jj5qq369",
+            "text": "AI panel",
+            "children": []
+          },
+          {
+            "id": "n_qzk5wd9g",
+            "text": "Installer",
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+}

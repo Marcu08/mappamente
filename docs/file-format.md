@@ -118,6 +118,10 @@ empty; the current UI does not render links yet.
 retried briefly because a watcher or another process may briefly hold the
 destination open. A failed save leaves the previous file untouched.
 
+Loads reject files larger than 5 MiB (`MAX_MAP_FILE_BYTES`) before reading them,
+so a malformed or hostile file cannot exhaust memory. Markdown input and text
+fields have their own limits when edited through the MCP server.
+
 ## Interoperability
 
 | Format | Direction | Status |

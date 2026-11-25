@@ -44,6 +44,10 @@ pub enum Error {
     #[error("invalid link {0:?} -> {1:?}: both nodes must exist")]
     InvalidLink(NodeId, NodeId),
 
+    /// A file exceeds the defensive size limit.
+    #[error("map file is too large ({size} bytes); maximum is {limit} bytes")]
+    FileTooLarge { size: u64, limit: u64 },
+
     /// A text input could not be parsed into a map.
     #[error("{0}")]
     Parse(String),

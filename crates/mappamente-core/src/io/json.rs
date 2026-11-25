@@ -10,8 +10,10 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
+use serde_json::Value;
+
 use crate::error::{Error, Result};
-use crate::model::MindMap;
+use crate::model::{FILE_VERSION, MindMap};
 
 /// Serializes a map, validating it first.
 pub fn to_string(map: &MindMap) -> Result<String> {
@@ -21,15 +23,37 @@ pub fn to_string(map: &MindMap) -> Result<String> {
     Ok(text)
 }
 
-/// Parses and validates a map from JSON.
+/// Migrates a raw JSON document to the current schema version.
+///
+/// The migration point is deliberately singular: every load goes through it
+/// before deserialization. Version 1 is the current schema and needs no
+/// transformation; unknown versions are rejected with the found and supported
+/// versions in the error.
+pub fn migrate(value: Value) -> Result<Value> {
+    let version = value
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Error::Parse("missing or invalid `version` field".to_owned()))?;
+    let version = u32::try_from(version)
+        .map_err(|_| Error::Parse(format!("invalid file version: {version}")))?;
+    match version {
+        FILE_VERSION => Ok(value),
+        other => Err(Error::UnsupportedVersion(other)),
+    }
+}
+
+/// Parses, migrates and validates a map from JSON.
 pub fn from_str(text: &str) -> Result<MindMap> {
-    let map: MindMap = serde_json::from_str(text)?;
+    let value: Value = serde_json::from_str(text)?;
+    let value = migrate(value)?;
+    let map: MindMap = serde_json::from_value(value)?;
     map.validate()?;
     Ok(map)
 }
 
 /// Loads a map from disk.
 pub fn load(path: &Path) -> Result<MindMap> {
+    crate::io::ensure_file_size(path)?;
     let text = fs::read_to_string(path)?;
     from_str(&text)
 }
@@ -174,6 +198,52 @@ mod tests {
     #[test]
     fn broken_json_reports_a_json_error() {
         assert!(matches!(from_str("{"), Err(Error::Json(_))));
+    }
+
+    #[test]
+    fn migrate_accepts_the_current_version_unchanged() {
+        let value = serde_json::json!({"version": FILE_VERSION, "future": true});
+        let migrated = migrate(value.clone()).unwrap();
+        assert_eq!(migrated, value);
+    }
+
+    #[test]
+    fn migrate_rejects_unknown_versions() {
+        let value = serde_json::json!({"version": 99});
+        assert!(matches!(migrate(value), Err(Error::UnsupportedVersion(99))));
+    }
+
+    #[test]
+    fn migrate_rejects_missing_or_invalid_versions() {
+        assert!(matches!(
+            migrate(serde_json::json!({"title": "no version"})),
+            Err(Error::Parse(_))
+        ));
+        assert!(matches!(
+            migrate(serde_json::json!({"version": "1"})),
+            Err(Error::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_files_are_rejected_by_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-large-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("large.mappa");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(crate::io::MAX_MAP_FILE_BYTES + 1).unwrap();
+        drop(file);
+
+        assert!(matches!(
+            load(&path),
+            Err(Error::FileTooLarge { limit, .. }) if limit == crate::io::MAX_MAP_FILE_BYTES
+        ));
+
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

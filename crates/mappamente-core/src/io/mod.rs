@@ -9,10 +9,27 @@ use std::path::Path;
 use crate::error::{Error, Result};
 use crate::model::MindMap;
 
+/// Maximum size of a map file accepted by [`load_path`] and
+/// [`json::load`]. Keeps a malformed or hostile path from exhausting memory.
+pub const MAX_MAP_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Rejects files larger than [`MAX_MAP_FILE_BYTES`] before reading them.
+pub(crate) fn ensure_file_size(path: &Path) -> Result<()> {
+    let size = fs::metadata(path)?.len();
+    if size > MAX_MAP_FILE_BYTES {
+        return Err(Error::FileTooLarge {
+            size,
+            limit: MAX_MAP_FILE_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// Loads a map, choosing the format from the file extension.
 ///
 /// Supported inputs: `.mappa`/`.json` (native) and `.md`/`.markdown` (outline).
 pub fn load_path(path: &Path) -> Result<MindMap> {
+    ensure_file_size(path)?;
     match extension(path).as_deref() {
         Some("mappa" | "json") => json::load(path),
         Some("md" | "markdown") => {
@@ -131,5 +148,22 @@ mod tests {
         }
         assert!(!is_supported_map_file(Path::new("e.svg")));
         assert!(!is_supported_map_file(Path::new("f")));
+    }
+
+    #[test]
+    fn oversized_files_are_rejected_by_load_path() {
+        let directory = temporary_directory("large");
+        let path = directory.join("large.mappa");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_MAP_FILE_BYTES + 1).unwrap();
+        drop(file);
+
+        assert!(matches!(
+            load_path(&path),
+            Err(Error::FileTooLarge { size, limit })
+                if size == MAX_MAP_FILE_BYTES + 1 && limit == MAX_MAP_FILE_BYTES
+        ));
+
+        fs::remove_dir_all(&directory).unwrap();
     }
 }

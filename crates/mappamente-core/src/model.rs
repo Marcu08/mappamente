@@ -76,6 +76,68 @@ impl Node {
     pub fn node_count(&self) -> usize {
         1 + self.children.iter().map(Node::node_count).sum::<usize>()
     }
+
+    /// Renders this subtree as an indented outline with node ids.
+    ///
+    /// Each line has the form `- [id] text`, followed by `note="..."`,
+    /// `color=#RRGGBB` and/or `collapsed` when those fields are set. The note
+    /// is escaped for single-line display. The result has no trailing newline.
+    #[must_use]
+    pub fn outline_with_ids(&self) -> String {
+        fn walk(node: &Node, depth: usize, out: &mut String) {
+            for _ in 0..depth {
+                out.push_str("  ");
+            }
+            out.push_str("- [");
+            out.push_str(&node.id);
+            out.push(']');
+
+            let mut text = String::with_capacity(node.text.len());
+            for ch in node.text.chars() {
+                text.push(match ch {
+                    '\n' | '\r' | '\t' => ' ',
+                    _ => ch,
+                });
+            }
+            if !text.is_empty() {
+                out.push(' ');
+                out.push_str(&text);
+            }
+            if !node.note.is_empty() {
+                out.push_str(" note=\"");
+                for ch in node.note.chars() {
+                    match ch {
+                        '\\' => out.push_str("\\\\"),
+                        '"' => out.push_str("\\\""),
+                        '\n' => out.push_str("\\n"),
+                        '\r' => out.push_str("\\r"),
+                        '\t' => out.push_str("\\t"),
+                        _ => out.push(ch),
+                    }
+                }
+                out.push('"');
+            }
+            if let Some(color) = &node.color {
+                out.push_str(" color=");
+                out.push_str(color);
+            }
+            if node.collapsed {
+                out.push_str(" collapsed");
+            }
+            out.push('\n');
+
+            for child in &node.children {
+                walk(child, depth + 1, out);
+            }
+        }
+
+        let mut out = String::new();
+        walk(self, 0, &mut out);
+        while out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    }
 }
 
 /// Reserved for cross-links between branches (not rendered yet).
@@ -127,6 +189,21 @@ impl MindMap {
             root: Node::new(root_text),
             links: Vec::new(),
         }
+    }
+
+    /// Applies an edit transactionally.
+    ///
+    /// The closure works on a clone of the document. The clone is validated
+    /// and its modification timestamp is updated only after `change` returns
+    /// successfully, and only then replaces `self`. If `change` returns an
+    /// error or validation fails, the original document is left untouched.
+    pub fn edit<T>(&mut self, change: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let mut draft = self.clone();
+        let value = change(&mut draft)?;
+        draft.validate()?;
+        draft.touch();
+        *self = draft;
+        Ok(value)
     }
 
     /// Immutable lookup by id.
@@ -308,8 +385,32 @@ impl MindMap {
     }
 
     /// Updates the modification timestamp.
+    ///
+    /// The timestamp is strictly increasing: two edits in the same millisecond
+    /// still produce different values, which makes optimistic concurrency
+    /// (MCP `expected_modified_at`) reliable.
     pub fn touch(&mut self) {
-        self.modified_at = now_ms();
+        let now = now_ms();
+        self.modified_at = if now <= self.modified_at {
+            self.modified_at.saturating_add(1)
+        } else {
+            now
+        };
+    }
+
+    /// Renders the tree as an indented outline where every line carries the
+    /// node id:
+    ///
+    /// ```text
+    /// - [n_ab12cd34] Root note="a note" color=#ff8800 collapsed
+    ///   - [n_ef56gh78] Child
+    /// ```
+    ///
+    /// `note` is quoted and escaped; `color` and `collapsed` appear only when
+    /// set. The optional metadata is compact and intended for tools/LLMs.
+    #[must_use]
+    pub fn outline_with_ids(&self) -> String {
+        self.root.outline_with_ids()
     }
 
     /// Renders the tree as an indented Markdown outline (no title).
@@ -713,6 +814,74 @@ mod tests {
         assert!(matches!(map.validate(), Err(Error::InvalidLink(_, _))));
         map.links.clear();
         assert!(map.validate().is_ok());
+    }
+
+    #[test]
+    fn edit_is_transactional_on_success() {
+        let mut map = MindMap::new("Test", "Root");
+        let root = map.root.id.clone();
+        let before = map.modified_at;
+
+        let child = map.edit(|draft| draft.add_child(&root, "Child")).unwrap();
+
+        assert!(map.find(&child).is_some());
+        assert_eq!(map.node_count(), 2);
+        assert!(map.modified_at > before);
+        assert!(map.validate().is_ok());
+    }
+
+    #[test]
+    fn edit_rolls_back_on_closure_error() {
+        let mut map = MindMap::new("Test", "Root");
+        let root = map.root.id.clone();
+        let before = map.clone();
+
+        let result: Result<()> = map.edit(|draft| {
+            draft.add_child(&root, "Temporary")?;
+            Err(Error::RootRemoval)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(map, before);
+    }
+
+    #[test]
+    fn edit_rolls_back_on_validation_error() {
+        let mut map = MindMap::new("Test", "Root");
+        let before = map.clone();
+
+        let result: Result<()> = map.edit(|draft| {
+            draft.root.id.clear();
+            Ok(())
+        });
+
+        assert!(matches!(result, Err(Error::InvalidId(_))));
+        assert_eq!(map, before);
+    }
+
+    #[test]
+    fn outline_with_ids_includes_compact_metadata() {
+        let mut map = MindMap::new("Test", "Root");
+        let root = map.root.id.clone();
+        let child = map.add_child(&root, "Child").unwrap();
+        map.set_note(&child, "line one\nsay \"hi\"").unwrap();
+        map.set_color(&child, Some("#ff8800")).unwrap();
+        map.set_collapsed(&child, true).unwrap();
+
+        let expected = format!(
+            "- [{root}] Root\n  - [{child}] Child note=\"line one\\nsay \\\"hi\\\"\" color=#ff8800 collapsed"
+        );
+        assert_eq!(map.outline_with_ids(), expected);
+        assert_eq!(map.root.outline_with_ids(), map.outline_with_ids());
+    }
+
+    #[test]
+    fn touch_is_strictly_increasing() {
+        let mut map = MindMap::new("Test", "Root");
+        map.touch();
+        let first = map.modified_at;
+        map.touch();
+        assert!(map.modified_at > first);
     }
 
     #[test]

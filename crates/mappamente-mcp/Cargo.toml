@@ -1,0 +1,31 @@
+[package]
+name = "mappamente-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "stdio Model Context Protocol server for Mappamente mind maps"
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "mappamente_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mappamente-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+mappamente-core = { path = "../mappamente-core" }
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+fastrand.workspace = true

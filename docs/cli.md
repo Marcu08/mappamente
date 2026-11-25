@@ -1,8 +1,8 @@
 # Command-line interface
 
-`mappamente.exe` is the console binary. It contains the CLI now and will host the
-MCP server later. The GUI-subsystem launcher for double-click is
-`mappamente-desktop.exe`.
+`mappamente.exe` is the console binary. The MCP server is a separate binary,
+`mappamente-mcp.exe`, so the CLI build does not include the MCP dependencies. The
+GUI-subsystem launcher for double-click is `mappamente-desktop.exe`.
 
 ```
 mappamente [COMMAND]

@@ -402,8 +402,8 @@ mod tests {
         assert!(!light.dark);
         assert!(dark.dark);
         let mut seen = std::collections::HashSet::new();
-        for index in 0..8 {
-            assert!(seen.insert(light.branches[index].to_array()));
+        for branch in &light.branches {
+            assert!(seen.insert(branch.to_array()));
         }
         assert_ne!(
             light.node_fill(Some(0), 1, None),

@@ -79,10 +79,7 @@ impl FileWatcher {
         // Drain stale events before switching paths.
         while self.receiver.try_recv().is_ok() {}
         let watch_path = path.parent().unwrap_or(path);
-        if let Err(error) = self
-            .watcher
-            .watch(watch_path, RecursiveMode::NonRecursive)
-        {
+        if let Err(error) = self.watcher.watch(watch_path, RecursiveMode::NonRecursive) {
             let _ = self.sender.send(FileEvent::Error(format!(
                 "failed to watch {}: {error}",
                 watch_path.display()
@@ -166,7 +163,10 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
 
-        assert!(found, "watcher did not report the change; observed events: {observed:?}");
+        assert!(
+            found,
+            "watcher did not report the change; observed events: {observed:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -210,7 +210,10 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        assert!(found, "new path should emit events; observed events: {observed:?}");
+        assert!(
+            found,
+            "new path should emit events; observed events: {observed:?}"
+        );
 
         watcher.clear();
         assert!(watcher.watching.is_none());

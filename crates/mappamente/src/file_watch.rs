@@ -5,7 +5,7 @@
 //! the event represents a real external change.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -13,6 +13,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 pub struct FileWatcher {
     watcher: RecommendedWatcher,
     receiver: Receiver<FileEvent>,
+    sender: Sender<FileEvent>,
     watching: Option<PathBuf>,
 }
 
@@ -31,6 +32,7 @@ impl FileWatcher {
     /// Creates a new watcher with no active path.
     pub fn new() -> Self {
         let (sender, receiver) = channel();
+        let event_sender = sender.clone();
         let watcher = RecommendedWatcher::new(
             move |result: Result<Event, notify::Error>| match result {
                 Ok(event) => {
@@ -38,19 +40,19 @@ impl FileWatcher {
                     match event.kind {
                         EventKind::Modify(_) | EventKind::Create(_) => {
                             for path in paths {
-                                let _ = sender.send(FileEvent::Changed(path));
+                                let _ = event_sender.send(FileEvent::Changed(path));
                             }
                         }
                         EventKind::Remove(_) => {
                             for path in paths {
-                                let _ = sender.send(FileEvent::Removed(path));
+                                let _ = event_sender.send(FileEvent::Removed(path));
                             }
                         }
                         _ => {}
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(FileEvent::Error(error.to_string()));
+                    let _ = event_sender.send(FileEvent::Error(error.to_string()));
                 }
             },
             notify::Config::default(),
@@ -60,6 +62,7 @@ impl FileWatcher {
         Self {
             watcher,
             receiver,
+            sender,
             watching: None,
         }
     }
@@ -75,9 +78,17 @@ impl FileWatcher {
         }
         // Drain stale events before switching paths.
         while self.receiver.try_recv().is_ok() {}
-        let _ = self
+        let watch_path = path.parent().unwrap_or(path);
+        if let Err(error) = self
             .watcher
-            .watch(path.parent().unwrap_or(path), RecursiveMode::NonRecursive);
+            .watch(watch_path, RecursiveMode::NonRecursive)
+        {
+            let _ = self.sender.send(FileEvent::Error(format!(
+                "failed to watch {}: {error}",
+                watch_path.display()
+            )));
+            return;
+        }
         self.watching = Some(path.to_path_buf());
     }
 
@@ -138,9 +149,11 @@ mod tests {
         fs::write(&path, "second").unwrap();
 
         let mut found = false;
+        let mut observed = Vec::new();
         // FSEvents may batch notifications; allow up to five seconds.
         for _ in 0..100 {
             for event in watcher.poll() {
+                observed.push(format!("{event:?}"));
                 if let FileEvent::Changed(changed) = event
                     && changed == path
                 {
@@ -153,7 +166,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
 
-        assert!(found, "watcher did not report the change");
+        assert!(found, "watcher did not report the change; observed events: {observed:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -181,9 +194,11 @@ mod tests {
 
         fs::write(&second, "changed").unwrap();
         let mut found = false;
+        let mut observed = Vec::new();
         // FSEvents may batch notifications; allow up to five seconds.
         for _ in 0..100 {
             for event in watcher.poll() {
+                observed.push(format!("{event:?}"));
                 if let FileEvent::Changed(changed) = event
                     && changed == second
                 {
@@ -195,7 +210,7 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        assert!(found, "new path should emit events");
+        assert!(found, "new path should emit events; observed events: {observed:?}");
 
         watcher.clear();
         assert!(watcher.watching.is_none());

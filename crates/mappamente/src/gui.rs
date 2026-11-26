@@ -23,7 +23,7 @@ use mappamente_core::model::{LayoutKind, MindMap, Node, NodeId};
 use mappamente_core::theme::{Palette, parse_hex};
 
 use crate::ai_panel::{AiPanel, AiPanelAction};
-use crate::file_watch::{FileEvent, FileWatcher};
+use crate::file_watch::{FileEvent, FileWatcher, same_path};
 use crate::icons::{self, Icon};
 use crate::style::{self, Tokens};
 use crate::ui_prefs::UiPrefs;
@@ -532,8 +532,8 @@ impl MappamenteApp {
         let mut removed = false;
         for event in self.file_watcher.poll() {
             match event {
-                FileEvent::Changed(event_path) if event_path == path => changed = true,
-                FileEvent::Removed(event_path) if event_path == path => removed = true,
+                FileEvent::Changed(event_path) if same_path(&event_path, &path) => changed = true,
+                FileEvent::Removed(event_path) if same_path(&event_path, &path) => removed = true,
                 FileEvent::Error(message) => {
                     self.error = Some(format!("File watcher error: {message}"));
                 }

@@ -132,12 +132,14 @@ mod tests {
         let mut watcher = FileWatcher::new();
         watcher.watch(&path);
 
-        // Allow the watcher to register.
-        thread::sleep(Duration::from_millis(100));
+        // Native macOS filesystem notifications can take around one second
+        // to be delivered. Give the backend time to attach before writing.
+        thread::sleep(Duration::from_millis(250));
         fs::write(&path, "second").unwrap();
 
         let mut found = false;
-        for _ in 0..50 {
+        // FSEvents may batch notifications; allow up to five seconds.
+        for _ in 0..100 {
             for event in watcher.poll() {
                 if let FileEvent::Changed(changed) = event
                     && changed == path
@@ -148,7 +150,7 @@ mod tests {
             if found {
                 break;
             }
-            thread::sleep(Duration::from_millis(20));
+            thread::sleep(Duration::from_millis(50));
         }
 
         assert!(found, "watcher did not report the change");
@@ -170,14 +172,17 @@ mod tests {
 
         let mut watcher = FileWatcher::new();
         watcher.watch(&first);
-        thread::sleep(Duration::from_millis(100));
+        // Allow the native backend to finish registering the first watch.
+        thread::sleep(Duration::from_millis(250));
         watcher.watch(&second);
         assert_eq!(watcher.watching, Some(second.clone()));
-        thread::sleep(Duration::from_millis(100));
+        // Re-registering a directory watch can be asynchronous on macOS.
+        thread::sleep(Duration::from_millis(250));
 
         fs::write(&second, "changed").unwrap();
         let mut found = false;
-        for _ in 0..50 {
+        // FSEvents may batch notifications; allow up to five seconds.
+        for _ in 0..100 {
             for event in watcher.poll() {
                 if let FileEvent::Changed(changed) = event
                     && changed == second
@@ -188,7 +193,7 @@ mod tests {
             if found {
                 break;
             }
-            thread::sleep(Duration::from_millis(20));
+            thread::sleep(Duration::from_millis(50));
         }
         assert!(found, "new path should emit events");
 

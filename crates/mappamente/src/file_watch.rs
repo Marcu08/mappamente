@@ -9,6 +9,24 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
+/// Compares paths after resolving filesystem aliases such as macOS `/var` -> `/private/var`.
+pub fn same_path(left: &Path, right: &Path) -> bool {
+    fn normalized(path: &Path) -> PathBuf {
+        if let Ok(path) = path.canonicalize() {
+            return path;
+        }
+        match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => parent
+                .canonicalize()
+                .map(|parent| parent.join(name))
+                .unwrap_or_else(|_| path.to_path_buf()),
+            _ => path.to_path_buf(),
+        }
+    }
+
+    normalized(left) == normalized(right)
+}
+
 /// A watcher that notifies the GUI when the open file changes on disk.
 pub struct FileWatcher {
     watcher: RecommendedWatcher,
@@ -152,7 +170,7 @@ mod tests {
             for event in watcher.poll() {
                 observed.push(format!("{event:?}"));
                 if let FileEvent::Changed(changed) = event
-                    && changed == path
+                    && same_path(&changed, &path)
                 {
                     found = true;
                 }
@@ -200,7 +218,7 @@ mod tests {
             for event in watcher.poll() {
                 observed.push(format!("{event:?}"));
                 if let FileEvent::Changed(changed) = event
-                    && changed == second
+                    && same_path(&changed, &second)
                 {
                     found = true;
                 }

@@ -13,6 +13,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::io::lock::FileLock;
 use crate::model::{FILE_VERSION, MindMap};
 
 /// Serializes a map, validating it first.
@@ -52,16 +53,97 @@ pub fn from_str(text: &str) -> Result<MindMap> {
 }
 
 /// Loads a map from disk.
+///
+/// Acquires an advisory shared lock so the read does not race with a writer
+/// from another process.
 pub fn load(path: &Path) -> Result<MindMap> {
     crate::io::ensure_file_size(path)?;
+    let _lock = FileLock::shared(path)?;
     let text = fs::read_to_string(path)?;
     from_str(&text)
 }
 
+/// Reads the `modified_at` timestamp from a saved map without deserializing
+/// the whole document.
+pub fn modified_at(path: &Path) -> Result<u64> {
+    crate::io::ensure_file_size(path)?;
+    let _lock = FileLock::shared(path)?;
+    let text = fs::read_to_string(path)?;
+    let value: Value = serde_json::from_str(&text)?;
+    value
+        .get("modified_at")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Error::Parse("missing modified_at in saved file".to_owned()))
+}
+
+/// Result of an atomic compare-and-save operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveResult {
+    /// The file was written and now has this revision.
+    Saved(u64),
+    /// The on-disk revision did not match the caller's expectation. The file
+    /// was not modified.
+    Conflict {
+        /// Revision the caller expected, or `None` for a new file.
+        expected: Option<u64>,
+        /// Revision currently on disk, or `None` if the file no longer exists.
+        actual: Option<u64>,
+    },
+}
+
 /// Saves a map to disk atomically.
+///
+/// Acquires an advisory exclusive lock on the target so the write is isolated
+/// from concurrent GUI or MCP processes. Callers that already hold the lock
+/// should use [`save_unlocked`].
 pub fn save(path: &Path, map: &MindMap) -> Result<()> {
+    let _lock = FileLock::exclusive(path)?;
+    save_unlocked(path, map)
+}
+
+/// Like [`save`] but does not acquire an advisory lock.
+///
+/// Useful when the caller already holds the lock and wants to avoid a
+/// self-deadlock.
+pub fn save_unlocked(path: &Path, map: &MindMap) -> Result<()> {
     let text = to_string(map)?;
     write_atomic(path, text.as_bytes())
+}
+
+/// Saves `map` to `path` only when the file is missing or its current
+/// `modified_at` equals `expected_modified_at`.
+///
+/// The check and the write happen atomically under a single exclusive advisory
+/// lock. This is the primitive the GUI uses to avoid overwriting external
+/// changes.
+pub fn save_if_current(
+    path: &Path,
+    map: &MindMap,
+    expected_modified_at: Option<u64>,
+) -> Result<SaveResult> {
+    let _lock = FileLock::exclusive(path)?;
+    let actual = if path.exists() {
+        Some(read_modified_at_unlocked(path)?)
+    } else {
+        None
+    };
+    if actual != expected_modified_at {
+        return Ok(SaveResult::Conflict {
+            expected: expected_modified_at,
+            actual,
+        });
+    }
+    save_unlocked(path, map)?;
+    Ok(SaveResult::Saved(map.modified_at))
+}
+
+fn read_modified_at_unlocked(path: &Path) -> Result<u64> {
+    let text = fs::read_to_string(path)?;
+    let value: Value = serde_json::from_str(&text)?;
+    value
+        .get("modified_at")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Error::Parse("missing modified_at in saved file".to_owned()))
 }
 
 /// Writes `bytes` to `path` using a temporary file and a rename.
@@ -294,6 +376,200 @@ mod tests {
         let path = directory.join("bad.mappa");
         assert!(matches!(save(&path, &map), Err(Error::DuplicateId(_))));
         assert!(!path.exists());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn save_if_current_writes_new_file_when_expected_is_none() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-cas-new-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("map.mappa");
+        let map = sample();
+
+        let result = save_if_current(&path, &map, None).unwrap();
+        assert_eq!(result, SaveResult::Saved(map.modified_at));
+        assert_eq!(load(&path).unwrap(), map);
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn save_if_current_rejects_existing_file_when_expected_is_none() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-cas-existing-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("map.mappa");
+        let existing = sample();
+        save(&path, &existing).unwrap();
+        let actual = modified_at(&path).unwrap();
+
+        let map = sample();
+        let result = save_if_current(&path, &map, None).unwrap();
+        assert_eq!(
+            result,
+            SaveResult::Conflict {
+                expected: None,
+                actual: Some(actual),
+            }
+        );
+        assert_eq!(load(&path).unwrap(), existing);
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn save_if_current_rejects_missing_file_when_expected_is_some() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-cas-missing-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("map.mappa");
+        let map = sample();
+
+        let result = save_if_current(&path, &map, Some(1234)).unwrap();
+        assert_eq!(
+            result,
+            SaveResult::Conflict {
+                expected: Some(1234),
+                actual: None,
+            }
+        );
+        assert!(!path.exists());
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn save_if_current_succeeds_when_revision_matches() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-cas-match-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("map.mappa");
+        let mut map = sample();
+        save(&path, &map).unwrap();
+        let base = modified_at(&path).unwrap();
+
+        map.edit(|draft| {
+            draft.title = "Updated".to_owned();
+            Ok(())
+        })
+        .unwrap();
+
+        let result = save_if_current(&path, &map, Some(base)).unwrap();
+        assert_eq!(result, SaveResult::Saved(map.modified_at));
+        assert_eq!(load(&path).unwrap(), map);
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn save_if_current_rejects_stale_revision() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-cas-stale-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("map.mappa");
+        let mut map = sample();
+        save(&path, &map).unwrap();
+        let base = modified_at(&path).unwrap();
+
+        // An external writer advances the on-disk revision.
+        let mut external = map.clone();
+        external
+            .edit(|draft| {
+                draft.title = "External".to_owned();
+                Ok(())
+            })
+            .unwrap();
+        save(&path, &external).unwrap();
+        let actual = modified_at(&path).unwrap();
+
+        map.edit(|draft| {
+            draft.title = "Local".to_owned();
+            Ok(())
+        })
+        .unwrap();
+        let result = save_if_current(&path, &map, Some(base)).unwrap();
+        assert_eq!(
+            result,
+            SaveResult::Conflict {
+                expected: Some(base),
+                actual: Some(actual),
+            }
+        );
+        // The file on disk must remain the external version.
+        assert_eq!(load(&path).unwrap(), external);
+
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn modified_at_reads_timestamp_without_full_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-ts-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("map.mappa");
+        let mut map = sample();
+        map.edit(|draft| {
+            draft.title = "Timestamped".to_owned();
+            Ok(())
+        })
+        .unwrap();
+        save(&path, &map).unwrap();
+        assert_eq!(modified_at(&path).unwrap(), map.modified_at);
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn concurrent_saves_keep_the_file_valid() {
+        let directory = std::env::temp_dir().join(format!(
+            "mappamente-json-concurrent-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("map.mappa");
+        let map = sample();
+        save(&path, &map).unwrap();
+
+        let path = std::sync::Arc::new(path);
+        let mut handles = Vec::new();
+        for index in 0..10 {
+            let path = std::sync::Arc::clone(&path);
+            handles.push(std::thread::spawn(move || {
+                let mut map = load(&path).unwrap();
+                let root = map.root.id.clone();
+                map.edit(|draft| {
+                    draft.add_child(&root, format!("Concurrent {index}"))?;
+                    Ok(())
+                })
+                .unwrap();
+                save(&path, &map).unwrap();
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let map = load(&path).unwrap();
+        assert!(map.validate().is_ok());
         fs::remove_dir_all(&directory).unwrap();
     }
 }

@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use eframe::egui::{
@@ -16,16 +17,28 @@ use eframe::egui::{
 use mappamente_ai::apply_actions;
 use mappamente_core::Editor;
 use mappamente_core::io;
+use mappamente_core::io::recovery::RecoveryCandidate;
 use mappamente_core::layout::{Layout, LayoutNode, LayoutOptions, Metrics};
 use mappamente_core::model::{LayoutKind, MindMap, Node, NodeId};
 use mappamente_core::theme::{Palette, parse_hex};
 
 use crate::ai_panel::{AiPanel, AiPanelAction};
+use crate::file_watch::{FileEvent, FileWatcher};
 use crate::icons::{self, Icon};
 use crate::style::{self, Tokens};
 use crate::ui_prefs::UiPrefs;
 
 const APP_NAME: &str = "Mappamente";
+
+/// Milliseconds of inactivity after an edit before autosave runs.
+const AUTOSAVE_DELAY_MS: u64 = 2_000;
+/// Minimum interval between autosave attempts.
+const AUTOSAVE_INTERVAL_MS: u64 = 5_000;
+/// Interval between recovery snapshots while the document is dirty.
+const RECOVERY_INTERVAL_MS: u64 = 15_000;
+/// Interval between proactive polls of the on-disk revision, so external
+/// changes that the watcher misses are still detected.
+const REVISION_POLL_INTERVAL_MS: u64 = 2_000;
 
 /// Opens the editor, optionally loading `initial`.
 pub fn run(initial: Option<PathBuf>) -> Result<()> {
@@ -109,6 +122,23 @@ struct MappamenteApp {
     known_nodes: HashSet<String>,
     node_birth: HashMap<String, f64>,
     nodes_initialized: bool,
+    file_watcher: FileWatcher,
+    last_edit_time_ms: u64,
+    last_autosave_time_ms: u64,
+    last_recovery_time_ms: u64,
+    pending_recovery: Option<RecoveryCandidate>,
+    /// Revision (`modified_at`) of the file we last loaded or saved. Used as
+    /// the expected value for atomic compare-and-save.
+    base_revision: Option<u64>,
+    /// Last revision we observed from disk via the watcher or polling. Used to
+    /// suppress repeated prompts and our own save echo events.
+    last_seen_revision: Option<u64>,
+    /// Set when the user chose "Keep Local" after an external change. The
+    /// document intentionally diverged from this disk revision; autosave is
+    /// suspended and the next explicit save must re-resolve the conflict.
+    diverged_revision: Option<u64>,
+    /// Time of the last proactive revision poll.
+    last_revision_poll_ms: u64,
 }
 
 impl MappamenteApp {
@@ -116,15 +146,22 @@ impl MappamenteApp {
         let prefs = UiPrefs::load();
         let default_theme = prefs.theme_or(system_theme.as_deref());
         let mut error = None;
-        let (map, path) = match initial {
-            Some(path) => match io::load_path(&path) {
-                Ok(map) => (map, Some(path)),
-                Err(load_error) => {
-                    error = Some(format!("Could not open {}: {load_error}", path.display()));
-                    (welcome_map(&default_theme), None)
+        let now_ms = now_ms();
+        let (map, path, pending_recovery, base_revision) = match initial {
+            Some(path) => {
+                let recovery = io::recovery::read_recovery(&path).ok().flatten();
+                match io::load_path(&path) {
+                    Ok(map) => {
+                        let base = Some(map.modified_at);
+                        (map, Some(path), recovery, base)
+                    }
+                    Err(load_error) => {
+                        error = Some(format!("Could not open {}: {load_error}", path.display()));
+                        (welcome_map(&default_theme), None, recovery, None)
+                    }
                 }
-            },
-            None => (welcome_map(&default_theme), None),
+            }
+            None => (welcome_map(&default_theme), None, None, None),
         };
 
         let selected = Some(map.root.id.clone());
@@ -135,6 +172,10 @@ impl MappamenteApp {
         let colors = collect_colors(&map);
         let branch_of = collect_branches(&map);
         let editor = Editor::new(map);
+        let mut file_watcher = FileWatcher::new();
+        if let Some(path) = &path {
+            file_watcher.watch(path);
+        }
 
         Self {
             editor,
@@ -165,6 +206,15 @@ impl MappamenteApp {
             known_nodes: HashSet::new(),
             node_birth: HashMap::new(),
             nodes_initialized: false,
+            file_watcher,
+            last_edit_time_ms: now_ms,
+            last_autosave_time_ms: now_ms,
+            last_recovery_time_ms: now_ms,
+            pending_recovery,
+            base_revision,
+            last_seen_revision: base_revision,
+            diverged_revision: None,
+            last_revision_poll_ms: now_ms,
         }
     }
 
@@ -188,7 +238,7 @@ impl MappamenteApp {
                 self.branch_of = collect_branches(&map);
                 self.selected = Some(map.root.id.clone());
                 self.editor = Editor::new(map);
-                self.path = Some(path);
+                self.path = Some(path.clone());
                 self.error = None;
                 self.editing = None;
                 self.drag = None;
@@ -198,6 +248,17 @@ impl MappamenteApp {
                 self.node_birth.clear();
                 self.nodes_initialized = false;
                 self.fit_pending = true;
+                self.file_watcher.watch(&path);
+                self.pending_recovery = io::recovery::read_recovery(&path).ok().flatten();
+                let base = Some(self.editor.map().modified_at);
+                self.base_revision = base;
+                self.last_seen_revision = base;
+                self.diverged_revision = None;
+                let now = now_ms();
+                self.last_edit_time_ms = now;
+                self.last_autosave_time_ms = now;
+                self.last_recovery_time_ms = now;
+                self.last_revision_poll_ms = now;
             }
             Err(error) => {
                 self.error = Some(format!("Could not open {}: {error}", path.display()));
@@ -239,6 +300,16 @@ impl MappamenteApp {
         self.nodes_initialized = false;
         self.known_nodes.clear();
         self.node_birth.clear();
+        self.file_watcher.clear();
+        self.pending_recovery = None;
+        self.base_revision = None;
+        self.last_seen_revision = None;
+        self.diverged_revision = None;
+        let now = now_ms();
+        self.last_edit_time_ms = now;
+        self.last_autosave_time_ms = now;
+        self.last_recovery_time_ms = now;
+        self.last_revision_poll_ms = now;
         self.after_change();
         self.fit_pending = true;
     }
@@ -279,15 +350,112 @@ impl MappamenteApp {
     }
 
     fn save_to(&mut self, path: PathBuf) {
-        match io::save_path(&path, self.map()) {
-            Ok(()) => {
-                self.editor.mark_saved();
-                self.path = Some(path);
-                self.error = None;
+        if self.path.as_deref() == Some(&path) {
+            self.save_current_path(path, true);
+        } else {
+            // Save As to a new path: do not silently overwrite an existing
+            // document. The atomic check catches both an existing file and a
+            // file created by another process between the check and the write.
+            match io::json::save_if_current(&path, self.map(), None) {
+                Ok(io::json::SaveResult::Saved(new_revision)) => {
+                    self.on_save_success(path, new_revision);
+                }
+                Ok(io::json::SaveResult::Conflict {
+                    expected: _,
+                    actual,
+                }) => {
+                    let actual = actual.unwrap_or(0);
+                    self.confirm_save_as_overwrite(path, actual);
+                }
+                Err(error) => {
+                    self.error = Some(format!("Could not save {}: {error}", path.display()));
+                }
+            }
+        }
+    }
+
+    /// Asks before replacing an existing file during Save As. The caller has
+    /// already confirmed once via the OS save dialog, but we ask again because
+    /// the file may have changed or appeared after that dialog closed.
+    fn confirm_save_as_overwrite(&mut self, path: PathBuf, actual: u64) {
+        let file = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("the file");
+        let choice = rfd::MessageDialog::new()
+            .set_title("Replace existing file?")
+            .set_description(format!(
+                "{file} already exists. Replace it with the current document?"
+            ))
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show();
+
+        if choice != rfd::MessageDialogResult::Yes {
+            return;
+        }
+        // The file may have changed while the dialog was open; retry the
+        // compare-and-save once with the revision we just observed.
+        match io::json::save_if_current(&path, self.map(), Some(actual)) {
+            Ok(io::json::SaveResult::Saved(new_revision)) => {
+                self.on_save_success(path, new_revision);
+            }
+            Ok(io::json::SaveResult::Conflict { .. }) => {
+                self.error = Some(format!(
+                    "Could not save {}: the file changed before it could be overwritten",
+                    path.display()
+                ));
             }
             Err(error) => {
                 self.error = Some(format!("Could not save {}: {error}", path.display()));
             }
+        }
+    }
+
+    /// Atomically saves the current document to its existing path, checking
+    /// `base_revision` to avoid overwriting external changes.
+    fn save_current_path(&mut self, path: PathBuf, interactive: bool) {
+        match io::json::save_if_current(&path, self.map(), self.base_revision) {
+            Ok(io::json::SaveResult::Saved(new_revision)) => {
+                self.on_save_success(path, new_revision);
+            }
+            Ok(io::json::SaveResult::Conflict {
+                expected: _,
+                actual,
+            }) => {
+                let actual = actual.unwrap_or(0);
+                if interactive {
+                    self.show_conflict_dialog(actual);
+                } else {
+                    // Autosave: do not block the UI with a modal. Record the
+                    // divergence so later saves cannot silently overwrite.
+                    self.diverged_revision = Some(actual);
+                    let file = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("The file");
+                    self.error = Some(format!(
+                        "{file} was modified externally. Save manually to resolve the conflict."
+                    ));
+                }
+            }
+            Err(error) => {
+                self.error = Some(format!("Could not save {}: {error}", path.display()));
+            }
+        }
+    }
+
+    fn on_save_success(&mut self, path: PathBuf, new_revision: u64) {
+        self.editor.mark_saved();
+        self.path = Some(path.clone());
+        self.base_revision = Some(new_revision);
+        self.last_seen_revision = Some(new_revision);
+        self.diverged_revision = None;
+        self.error = None;
+        self.last_autosave_time_ms = now_ms();
+        self.file_watcher.watch(&path);
+        if let Err(error) = io::recovery::cleanup_recovery(&path) {
+            eprintln!("mappamente: could not remove recovery file: {error}");
         }
     }
 
@@ -304,8 +472,254 @@ impl MappamenteApp {
             == rfd::MessageDialogResult::Yes
     }
 
+    /// Saves the current document automatically when it has been dirty for a
+    /// short delay and enough time has passed since the last autosave.
+    fn autosave(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        if !self.editor.is_dirty() {
+            return;
+        }
+        // Suspend autosave while we already know we diverged from disk.
+        if self.diverged_revision.is_some() {
+            return;
+        }
+        let now = now_ms();
+        if now.saturating_sub(self.last_edit_time_ms) < AUTOSAVE_DELAY_MS {
+            return;
+        }
+        if now.saturating_sub(self.last_autosave_time_ms) < AUTOSAVE_INTERVAL_MS {
+            return;
+        }
+        // Avoid autosaving imported/lossy formats; force native save first.
+        if !matches!(io::extension(&path).as_deref(), Some("mappa" | "json")) {
+            return;
+        }
+        self.commit_editing();
+        self.save_current_path(path, false);
+    }
+
+    /// Writes a recovery snapshot if the document is dirty and enough time has
+    /// passed since the last snapshot.
+    fn write_recovery_snapshot(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        if !self.editor.is_dirty() {
+            return;
+        }
+        let now = now_ms();
+        if now.saturating_sub(self.last_recovery_time_ms) < RECOVERY_INTERVAL_MS {
+            return;
+        }
+        self.last_recovery_time_ms = now;
+        if let Err(error) = io::recovery::write_recovery(&path, self.map()) {
+            eprintln!("mappamente: could not write recovery snapshot: {error}");
+        }
+    }
+
+    /// Checks for file-system events from the watcher and acts on real external
+    /// changes. Also polls the disk revision periodically in case the watcher
+    /// missed an event.
+    fn check_external_changes(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let now = now_ms();
+
+        let mut changed = false;
+        let mut removed = false;
+        for event in self.file_watcher.poll() {
+            match event {
+                FileEvent::Changed(event_path) if event_path == path => changed = true,
+                FileEvent::Removed(event_path) if event_path == path => removed = true,
+                FileEvent::Error(message) => {
+                    self.error = Some(format!("File watcher error: {message}"));
+                }
+                _ => {}
+            }
+        }
+
+        if removed {
+            self.handle_file_removed(path);
+            return;
+        }
+
+        let mut external_revision = self.last_seen_revision;
+        if changed && let Ok(revision) = saved_modified_at(&path) {
+            external_revision = external_revision.max(Some(revision));
+        }
+
+        // Periodic poll catches changes the watcher may have dropped.
+        if now.saturating_sub(self.last_revision_poll_ms) >= REVISION_POLL_INTERVAL_MS {
+            self.last_revision_poll_ms = now;
+            if let Ok(revision) = saved_modified_at(&path) {
+                external_revision = external_revision.max(Some(revision));
+            }
+        }
+
+        let Some(external_revision) = external_revision else {
+            return;
+        };
+        self.last_seen_revision = Some(external_revision);
+
+        // Ignore our own save echo and revisions we have already seen.
+        if Some(external_revision) <= self.base_revision {
+            return;
+        }
+        // Do not prompt again for the revision the user already chose to keep.
+        if self.diverged_revision == Some(external_revision) {
+            return;
+        }
+
+        if !self.editor.is_dirty() {
+            // No local changes: safe to reload automatically.
+            self.reload_from_disk();
+            self.error = Some(format!(
+                "{} was updated externally and reloaded.",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("The file")
+            ));
+        } else {
+            self.show_conflict_dialog(external_revision);
+        }
+    }
+
+    fn handle_file_removed(&mut self, path: PathBuf) {
+        self.error = Some(format!(
+            "{} was deleted or renamed externally. Save to keep your changes.",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("The open file")
+        ));
+        self.file_watcher.clear();
+        self.base_revision = None;
+        self.last_seen_revision = None;
+    }
+
+    fn reload_from_disk(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        self.commit_editing();
+        match io::load_path(&path) {
+            Ok(map) => {
+                self.kind = map.layout;
+                self.theme = Palette::by_name(&map.theme).name.to_owned();
+                self.tokens = Tokens::for_theme(&self.theme);
+                self.applied_style = None;
+                self.layout = compute_layout(&map, self.kind);
+                self.colors = collect_colors(&map);
+                self.branch_of = collect_branches(&map);
+                self.selected = Some(map.root.id.clone());
+                self.editor = Editor::new(map);
+                self.editing = None;
+                self.drag = None;
+                self.hovered = None;
+                self.fit_animation = None;
+                self.known_nodes.clear();
+                self.node_birth.clear();
+                self.nodes_initialized = false;
+                self.fit_pending = true;
+                self.error = None;
+                let base = Some(self.editor.map().modified_at);
+                self.base_revision = base;
+                self.last_seen_revision = base;
+                self.diverged_revision = None;
+            }
+            Err(error) => {
+                self.error = Some(format!("Could not reload {}: {error}", path.display()));
+            }
+        }
+    }
+
+    fn show_conflict_dialog(&mut self, external_modified_at: u64) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let file = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("the file");
+        let choice = rfd::MessageDialog::new()
+            .set_title("External changes detected")
+            .set_description(format!(
+                "{file} was modified externally while you had unsaved changes.\n\nYes = Reload the external version (lose local changes)\nNo = Keep your local version\nCancel = Save your version under a new name"
+            ))
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show();
+
+        match choice {
+            rfd::MessageDialogResult::Yes => {
+                self.reload_from_disk();
+            }
+            rfd::MessageDialogResult::No => {
+                // Keep ours: remember the disk revision we are ignoring so
+                // later saves (including autosave) cannot silently overwrite it.
+                self.diverged_revision = Some(external_modified_at);
+                self.last_seen_revision = Some(external_modified_at);
+                self.error = Some(format!(
+                    "{file} was modified externally. Your local changes are kept; use Save As to preserve them."
+                ));
+            }
+            _ => {
+                self.save_as();
+            }
+        }
+    }
+
+    fn handle_recovery(&mut self) {
+        let Some(candidate) = self.pending_recovery.take() else {
+            return;
+        };
+        let file = candidate
+            .original_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("the file");
+        let choice = rfd::MessageDialog::new()
+            .set_title("Recover unsaved changes?")
+            .set_description(format!(
+                "A newer recovery snapshot was found for {file}.\n\nIt was saved at {} because Mappamente did not shut down cleanly. Restore it?",
+                format_timestamp(candidate.recovered_at)
+            ))
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show();
+
+        if choice == rfd::MessageDialogResult::Yes {
+            let map = candidate.map;
+            self.kind = map.layout;
+            self.theme = Palette::by_name(&map.theme).name.to_owned();
+            self.tokens = Tokens::for_theme(&self.theme);
+            self.applied_style = None;
+            self.layout = compute_layout(&map, self.kind);
+            self.colors = collect_colors(&map);
+            self.branch_of = collect_branches(&map);
+            self.selected = Some(map.root.id.clone());
+            self.editor = Editor::new(map);
+            self.editor.mark_dirty();
+            self.editing = None;
+            self.drag = None;
+            self.hovered = None;
+            self.fit_animation = None;
+            self.known_nodes.clear();
+            self.node_birth.clear();
+            self.nodes_initialized = false;
+            self.fit_pending = true;
+            self.error = Some(format!(
+                "Recovered unsaved changes from {}.",
+                format_timestamp(candidate.recovered_at)
+            ));
+        }
+    }
+
     /// Recomputes derived data after a document change and prunes stale ids.
     fn after_change(&mut self) {
+        self.last_edit_time_ms = now_ms();
         self.kind = self.editor.map().layout;
         let theme = Palette::by_name(&self.editor.map().theme).name.to_owned();
         if theme != self.theme {
@@ -1599,9 +2013,13 @@ impl MappamenteApp {
 
 impl eframe::App for MappamenteApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.handle_recovery();
         self.handle_close(ui.ctx());
         self.apply_visuals(ui.ctx());
         self.handle_keys(ui.ctx());
+        self.autosave();
+        self.write_recovery_snapshot();
+        self.check_external_changes();
 
         let dropped = ui.ctx().input(|input| {
             input
@@ -1742,6 +2160,35 @@ fn control_points(
             mappamente_core::Point::new(from.x, from.y + dy * 0.5),
             mappamente_core::Point::new(to.x, to.y - dy * 0.5),
         )
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
+}
+
+fn saved_modified_at(path: &std::path::Path) -> anyhow::Result<u64> {
+    Ok(io::json::modified_at(path)?)
+}
+
+fn format_timestamp(ms: u64) -> String {
+    let seconds = ms / 1000;
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    if days > 0 {
+        format!("{days} day{} ago", if days == 1 { "" } else { "s" })
+    } else if hours > 0 {
+        format!("{hours} hour{} ago", if hours == 1 { "" } else { "s" })
+    } else if minutes > 0 {
+        format!(
+            "{minutes} minute{} ago",
+            if minutes == 1 { "" } else { "s" }
+        )
+    } else {
+        "just now".to_owned()
     }
 }
 

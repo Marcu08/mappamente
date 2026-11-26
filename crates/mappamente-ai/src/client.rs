@@ -122,10 +122,16 @@ impl ProviderClient {
         let status = response.status();
         let body = response.text().map_err(network_error)?;
         if !status.is_success() {
+            let mut message = provider_message(&body);
+            if status.as_u16() == 402 && request.settings.id == "opencode" {
+                message.push_str(
+                    " — this is the pay-as-you-go Console balance. If you have an OpenCode Go subscription, select the \"OpenCode Go\" provider: a Go key does not draw from the Console balance.",
+                );
+            }
             return Err(AiError::Http {
                 provider: request.settings.name.clone(),
                 status: status.as_u16(),
-                message: provider_message(&body),
+                message,
             });
         }
         match request.settings.protocol {
@@ -140,6 +146,9 @@ impl ProviderClient {
         let mut builder = self.client.post(endpoint).json(&body);
         if let Some(key) = api_key(&request.settings) {
             builder = builder.bearer_auth(key);
+        }
+        if let Some(session) = session_id(&request.settings) {
+            builder = builder.header("x-opencode-session", session);
         }
         builder.send().map_err(network_error)
     }
@@ -276,6 +285,14 @@ fn api_key(settings: &ProviderSettings) -> Option<&str> {
         .as_deref()
         .map(str::trim)
         .filter(|key| !key.is_empty())
+}
+
+fn session_id(settings: &ProviderSettings) -> Option<&str> {
+    settings
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|session| !session.is_empty())
 }
 
 #[derive(Serialize)]
@@ -548,6 +565,12 @@ mod tests {
         assert_eq!(
             endpoint(&opencode).unwrap().as_str(),
             "https://opencode.ai/inference/openai/v1/chat/completions"
+        );
+
+        let opencode_go = settings(preset_by_id("opencode-go").unwrap());
+        assert_eq!(
+            endpoint(&opencode_go).unwrap().as_str(),
+            "https://opencode.ai/inference/go/openai/v1/chat/completions"
         );
 
         let mut local = settings(preset_by_id("opencode-local").unwrap());

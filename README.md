@@ -7,7 +7,7 @@
 **Mind maps, charted.**
 
 [![CI](https://github.com/Marcu08/mappamente/actions/workflows/ci.yml/badge.svg)](https://github.com/Marcu08/mappamente/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
@@ -27,9 +27,9 @@ name combines *mappa* (map) and *mente* (mind). It is built to stay small: a
 native window, no WebView, plain JSON files you can read and diff, and a CLI
 you can script. Editing, layout, themes and undo are local and instant.
 
-> **v0.1.0:** the core engine, headless CLI and native editor are available.
-> The MCP server, AI assistant and visual redesign are in the unreleased
-> working tree.
+> **v0.2.0** adds reliable persistence, crash recovery, live GUI/MCP
+> synchronization and cross-process conflict protection on top of the 0.1.x
+> core engine, CLI, native editor, MCP server and AI assistant.
 
 ## Highlights
 
@@ -37,18 +37,18 @@ you can script. Editing, layout, themes and undo are local and instant.
 | --- | --- |
 | **Edit in place** | Double-click a node (or press `F2`), then type. `Tab` adds a child, `Enter` adds a sibling, `Delete` removes a branch. |
 | **Drag to organise** | Drag a branch to move it, or drop it on another node to reparent it. Drag the background to pan. |
-| **Your data** | `.mappa` is readable JSON with a schema version. Writes are atomic and validated. |
+| **Your data** | `.mappa` is readable JSON with a schema version. Writes are atomic and validated; autosave and recovery snapshots protect recent work. |
 | **Interop, not lock-in** | Import Markdown outlines; export Markdown and standalone SVG with four themes. |
-| **Agent-ready** | A stdio MCP server exposes reading and editing to Claude Desktop, Claude Code and other MCP clients. |
+| **Agent-ready** | A stdio MCP server exposes reading and editing to Claude Desktop, Claude Code and other MCP clients; the GUI watches and reloads external edits. |
 | **AI assistant** | A built-in panel edits the live canvas through OpenAI, Anthropic, OpenCode and other providers; every turn is one undo step. |
 | **Calm chrome** | Floating icon toolbar, branch-coloured curved connectors, adaptive dot grid and a minimal status line. Short transitions can be disabled. |
 | **Small by design** | Native `egui` canvas, no WebView, no Electron, no background services. |
 | **Open source** | MIT OR Apache-2.0, no telemetry, no account. |
 
-## Redesign
+## Visual design
 
-The 0.1.x working tree gives the editor a quieter visual language without
-changing the `.mappa` format or the editing model:
+The editor uses a quiet visual language without changing the `.mappa` format or
+the editing model:
 
 - one semantic token module (`crates/mappamente/src/style.rs`) owns colors,
   radii, spacing, typography and shadows;
@@ -145,6 +145,46 @@ Install it on your `PATH` with `cargo install --path crates/mappamente`, then
 drop the `.\target\release\` prefix. Run `mappamente --help` for every option.
 More in [docs/cli.md](docs/cli.md).
 
+## Persistence and synchronization
+
+### Autosave and crash recovery
+
+The editor autosaves a dirty document a few seconds after the last edit. You can
+still press `Ctrl+S` to save immediately; the status pill shows **saved** or
+**unsaved** and the window title shows an asterisk when there are unsaved
+changes.
+
+While a document is dirty, Mappamente writes a recovery snapshot next to the
+original file (`.{name}.mappamente-recovery`). If the app crashes or is killed,
+the next time you open that file you will be asked whether to restore the
+snapshot. Recovery is never applied silently: if the saved file is already
+newer, the recovery file is ignored.
+
+### GUI and MCP synchronization
+
+When a `.mappa` file is open in the editor, the GUI watches it for external
+changes. If the file is modified by an MCP client, another process or a sync
+tool:
+
+- when your local copy has no unsaved changes, the GUI reloads the file
+  automatically and shows a status message;
+- when you have unsaved changes, a dialog asks whether to reload the external
+  version or keep yours.
+
+Deleted or renamed files are reported in the status line so you can save your
+local copy under a new name if needed.
+
+### Concurrent edits and conflicts
+
+Both the GUI and the MCP server acquire an advisory lock on the target file
+while reading or writing. This closes the check-then-write race where two
+writers load the same file, both see the same `modified_at`, and then both save.
+
+MCP mutations still accept the optional `expected_modified_at` token. Passing a
+stale token returns a `modified_at_mismatch` tool error so the client can reload
+and retry. Omitting the token means last write wins, but the lock guarantees the
+write is atomic with respect to other locked writers.
+
 ## MCP server
 
 `mappamente-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
@@ -226,8 +266,11 @@ The equivalent project `.mcp.json` entry is:
 
 Read tools return `modified_at`; pass it back as `expected_modified_at` on any
 mutation to get an `isError` result instead of overwriting a concurrent change.
-Omitting the token means last write wins. Text and notes are limited to 10,000
-characters, Markdown input to 100,000 characters, and map files to 5 MiB.
+The server also acquires an advisory file lock for every mutation, so two
+writers cannot race between the read, check and write. Omitting the token means
+last write wins, but the lock still serializes the actual write. Text and notes
+are limited to 10,000 characters, Markdown input to 100,000 characters, and map
+files to 5 MiB.
 
 ### Security
 
@@ -239,7 +282,10 @@ characters, Markdown input to 100,000 characters, and map files to 5 MiB.
 - **Explicit overwrites:** `create_map` never replaces a file, and `export`
   requires `overwrite: true`; native export refuses to overwrite its source.
 - **Crash-safe writes:** every save goes through the core atomic writer
-  (temporary file, sync, rename).
+  (temporary file, sync, rename) and holds an advisory lock while writing.
+- **Recovery snapshots:** while a document is dirty, a sibling recovery file is
+  written periodically; if Mappamente did not shut down cleanly, the next open
+  offers to restore the latest snapshot.
 - **Least privilege:** point `--dir` at a maps folder, not at your home
   directory; any MCP client you connect can edit every map inside it.
 
@@ -266,7 +312,8 @@ Service) and can be overridden by the environment variable shown below.
 | --- | --- | --- |
 | OpenAI | `OPENAI_API_KEY` | OpenAI chat completions. |
 | Anthropic | `ANTHROPIC_API_KEY` | Anthropic Messages API. |
-| OpenCode Console | `OPENCODE_API_KEY` | OpenCode Zen/Console cloud gateway. |
+| OpenCode Console | `OPENCODE_API_KEY` | OpenCode Zen/Console pay-as-you-go gateway. |
+| OpenCode Go | `OPENCODE_API_KEY` | OpenCode Go / Go Plus subscription gateway (not the Console balance). |
 | OpenCode local | `OPENCODE_PASSWORD` | Local `opencode serve`, optional model as `provider/model`. |
 | OpenRouter | `OPENROUTER_API_KEY` | Model router. |
 | Groq | `GROQ_API_KEY` | Fast inference. |
@@ -277,6 +324,13 @@ Service) and can be overridden by the environment variable shown below.
 | Ollama | — | Local, no key; default `http://localhost:11434/v1`. |
 | LM Studio | — | Local, no key; default `http://127.0.0.1:1234/v1`. |
 | Custom / local | `MAPPAMENTE_API_KEY` | Any OpenAI-compatible endpoint. |
+
+OpenCode Go and Console are separate gateways: a Go subscription key only works
+on **OpenCode Go** (`https://opencode.ai/inference/go/openai/v1`), while the
+Console preset bills the pay-as-you-go balance. Using a Go key on the Console
+preset returns HTTP 402 "insufficient balance" because the Console wallet is
+empty. Go requests also carry a stable `x-opencode-session` header, which the
+gateway requires.
 
 For a local OpenCode server:
 
@@ -317,17 +371,17 @@ so it uses the server's configured providers and models.
 - **CLI:** `new`, `convert`, `render`, `gui`.
 - **MCP:** stdio server with sandboxed map access, ten tools, optimistic
   concurrency and tool-level errors.
-- **AI:** side panel with OpenAI, Anthropic, OpenCode Console/local, OpenRouter,
+- **AI:** side panel with OpenAI, Anthropic, OpenCode Console/Go/local, OpenRouter,
   Groq, DeepSeek, Mistral, Gemini, xAI, Ollama, LM Studio and custom endpoints;
   OS keyring storage; live JSON actions in one undo step.
 - **Formats:** native `.mappa`/`.json`, Markdown outlines, SVG with the shared
   branch palette.
-- **Engineering:** 155 tests, CI for Linux/Windows/macOS, `clippy -D warnings`,
+- **Engineering:** 176 tests, CI for Linux/Windows/macOS, `clippy -D warnings`,
   rustdoc clean, dual license.
 
-Not implemented yet: autosave, node notes/colors UI, collapse toggle in the
-canvas, OPML/FreeMind, PNG/PDF, MCP live reload and provider-native tool calling.
-See the [roadmap](#roadmap).
+Not implemented yet: node notes/colors UI, collapse toggle in the canvas,
+OPML/FreeMind, PNG/PDF and provider-native tool calling. See the
+[roadmap](#roadmap).
 
 ## File format
 
@@ -368,7 +422,7 @@ crates/
     model.rs           document tree, IDs, validation, operations
     layout.rs          tree / radial / logical layout, text wrapping
     history.rs         snapshot undo/redo, transactions, coalescing
-    io/                native JSON + Markdown, atomic writes, migration
+    io/                native JSON + Markdown, atomic writes, locking, recovery
     export/svg.rs      deterministic SVG renderer
     theme.rs           four shared palettes
   mappamente/          lib + two binaries
@@ -402,11 +456,11 @@ and accessible text colors; the SVG exporter consumes the same branch palette.
 The console and desktop binaries share the same library; the desktop one has no
 console window on Windows release builds.
 
-The MCP server is a separate binary that writes files atomically; a future file
-watcher will let the GUI reload external changes. The AI panel uses
-`mappamente-ai` to call the selected provider and applies the returned action
-plan through the same `Editor`, so the canvas, undo history and dirty tracking
-stay consistent.
+The MCP server is a separate binary that writes files atomically while holding
+an advisory file lock; the GUI watches the open file and reloads or warns about
+external changes. The AI panel uses `mappamente-ai` to call the selected provider
+and applies the returned action plan through the same `Editor`, so the canvas,
+undo history and dirty tracking stay consistent.
 
 ## Roadmap
 
@@ -415,8 +469,8 @@ stay consistent.
 | 1 | Core model, JSON, layout, undo, CI, licenses | Done |
 | 2 | CLI, Markdown, SVG, preview window, shortcut | Done |
 | 3 | Editing canvas: inline edit, add/delete, drag/reparent, save, undo | Done |
-| 4 | OPML / FreeMind, PNG export, autosave | Planned |
-| 5 | MCP server, live reload, client setup | MCP server done; live reload planned |
+| 4 | OPML / FreeMind, PNG export | Planned |
+| 5 | MCP server, live reload, client setup | Done |
 | 6 | AI panel with provider selection, keyring and live edits | Done |
 | 7 | Installer, file associations, packaging | Planned |
 

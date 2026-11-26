@@ -1,24 +1,25 @@
 # Known issues and limitations
 
-## Current version (0.1.0)
+## Current version (0.2.0)
 
-- No autosave or crash-recovery file yet.
 - Node notes, colors and the collapse flag are supported by the format and
   core, but the canvas has no UI to edit them. Existing values are preserved.
 - No in-canvas collapse/expand toggle; collapsed branches imported from files
   render as collapsed.
-- The MCP server and AI panel are implemented, but MCP live reload is not.
 - OPML, FreeMind and PNG/PDF export are not implemented.
 - Cross-links (`links`) are reserved and validated but never rendered.
 - Single-window only; opening a second file starts a second process.
+- External changes trigger a Reload / Keep Local / Save As dialog when local
+  edits exist. "Keep Local" deliberately freezes the on-disk base revision so
+  later saves cannot silently overwrite the external version.
+- Save As uses an atomic compare-and-save with `expected_revision = None`; an
+  existing destination produces an explicit overwrite confirmation instead of a
+  silent replacement, and a file created by another process between the check
+  and the write is detected.
 
 ## MCP server
 
 - stdio only: there is no HTTP/SSE transport, so clients must launch the binary.
-- No live reload: the GUI does not watch files yet; external MCP edits appear
-  after reopening the map.
-- `expected_modified_at` is optional. Omitting it means last-write-wins; two
-  concurrent writers can still overwrite each other.
 - Map names are simple file names inside `--dir`; subdirectories are not
   addressable. Windows device names and names with trailing dots/spaces are
   rejected on every platform to keep behavior portable.
@@ -29,9 +30,9 @@
 - Export supports SVG, Markdown and native JSON only; there is no PNG/PDF.
 - The trust model is local: anyone who can launch the server can edit every map
   in `--dir`. Do not point it at a sensitive directory.
-- The store rejects existing files that canonicalize outside the root and
-  refuses symlinked export targets, but it does not attempt to defend against a
-  hostile process racing filesystem changes between check and write.
+- Advisory file locks protect against concurrent writers that use the same
+  locking mechanism. A hostile or non-cooperating process can still ignore the
+  lock and race the filesystem.
 
 ## AI assistant
 
@@ -136,9 +137,9 @@
 
 ## Testing
 
-- 155 tests: 92 core unit, 2 core integration, 13 library unit (CLI/GUI/style/
-  preferences/AI panel), 7 CLI integration, 11 MCP unit, 2 MCP stdio integration,
-  24 AI unit, 4 AI HTTP tests. Doc tests: 0.
+- 176 tests: 106 core unit, 2 core integration, 15 library unit (CLI/GUI/style/
+  preferences/AI panel/file watcher), 7 CLI integration, 14 MCP unit, 2 MCP stdio
+  integration, 24 AI unit, 6 AI HTTP tests. Doc tests: 0.
 - AI HTTP tests run a local `TcpListener` mock and verify OpenAI-compatible,
   Anthropic and OpenCode-local request paths, auth headers, bodies and response
   parsing without external network access.

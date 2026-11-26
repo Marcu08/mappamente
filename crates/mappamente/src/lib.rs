@@ -2,6 +2,7 @@
 
 pub mod ai_panel;
 pub mod cli;
+pub mod file_watch;
 pub mod gui;
 pub mod icons;
 pub mod style;

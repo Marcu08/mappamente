@@ -10,8 +10,8 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
-use mappamente_core::io::{self, json, markdown};
-use mappamente_core::{LayoutKind, MindMap};
+use mappamente_core::io::{self, json, lock::FileLock, markdown};
+use mappamente_core::{Error as CoreError, LayoutKind, MindMap};
 
 use crate::error::StoreError;
 
@@ -263,6 +263,9 @@ impl MapStore {
         let normalized =
             normalize_simple_name(name, MAP_EXTENSIONS, Some("mappa"), MAP_EXTENSIONS_LABEL)?;
         let path = self.root.join(&normalized);
+
+        // Take the lock first so the existence check and write are atomic.
+        let _lock = FileLock::exclusive(&path)?;
         match fs::symlink_metadata(&path) {
             Ok(_) => return Err(StoreError::MapExists(normalized)),
             Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -273,7 +276,8 @@ impl MapStore {
         if let Some(layout) = layout {
             map.set_layout(layout);
         }
-        json::save(&path, &map)?;
+        let bytes = json::to_string(&map)?.into_bytes();
+        json::write_atomic(&path, &bytes)?;
         Ok(Mutation {
             name: normalized,
             map,
@@ -291,15 +295,9 @@ impl MapStore {
         expected_modified_at: Option<u64>,
     ) -> Result<Mutation, StoreError> {
         check_limit("text", text, MAX_TEXT_CHARS)?;
-        let (normalized, path, mut map) = self.load(name)?;
-        check_modified_at(&map, expected_modified_at)?;
-        let node_id =
-            map.edit(|draft| draft.add_child_at(parent_id, index.unwrap_or(usize::MAX), text))?;
-        json::save(&path, &map)?;
-        Ok(Mutation {
-            name: normalized,
-            map,
-            ids: vec![node_id],
+        self.mutate(name, expected_modified_at, |map| {
+            let id = map.add_child_at(parent_id, index.unwrap_or(usize::MAX), text)?;
+            Ok(vec![id])
         })
     }
 
@@ -313,21 +311,9 @@ impl MapStore {
         expected_modified_at: Option<u64>,
     ) -> Result<Mutation, StoreError> {
         check_limit("markdown", outline, MAX_MARKDOWN_CHARS)?;
-        let (normalized, path, mut map) = self.load(name)?;
-        check_modified_at(&map, expected_modified_at)?;
-        let ids = map.edit(|draft| {
-            markdown::insert_markdown_children(
-                draft,
-                parent_id,
-                index.unwrap_or(usize::MAX),
-                outline,
-            )
-        })?;
-        json::save(&path, &map)?;
-        Ok(Mutation {
-            name: normalized,
-            map,
-            ids,
+        let idx = index.unwrap_or(usize::MAX);
+        self.mutate(name, expected_modified_at, |map| {
+            markdown::insert_markdown_children(map, parent_id, idx, outline)
         })
     }
 
@@ -348,29 +334,22 @@ impl MapStore {
         if let Some(note) = changes.note {
             check_limit("note", note, MAX_TEXT_CHARS)?;
         }
-        let (normalized, path, mut map) = self.load(name)?;
-        check_modified_at(&map, expected_modified_at)?;
-        map.edit(|draft| {
+        let target = node_id.to_owned();
+        self.mutate(name, expected_modified_at, |map| {
             if let Some(text) = changes.text {
-                draft.set_text(node_id, text)?;
+                map.set_text(&target, text)?;
             }
             if let Some(note) = changes.note {
-                draft.set_note(node_id, note)?;
+                map.set_note(&target, note)?;
             }
             if let Some(color) = changes.color {
                 let color = if color.is_empty() { None } else { Some(color) };
-                draft.set_color(node_id, color)?;
+                map.set_color(&target, color)?;
             }
             if let Some(collapsed) = changes.collapsed {
-                draft.set_collapsed(node_id, collapsed)?;
+                map.set_collapsed(&target, collapsed)?;
             }
-            Ok(())
-        })?;
-        json::save(&path, &map)?;
-        Ok(Mutation {
-            name: normalized,
-            map,
-            ids: vec![node_id.to_owned()],
+            Ok(vec![target.clone()])
         })
     }
 
@@ -383,14 +362,12 @@ impl MapStore {
         index: Option<usize>,
         expected_modified_at: Option<u64>,
     ) -> Result<Mutation, StoreError> {
-        let (normalized, path, mut map) = self.load(name)?;
-        check_modified_at(&map, expected_modified_at)?;
-        map.edit(|draft| draft.move_node(node_id, new_parent_id, index.unwrap_or(usize::MAX)))?;
-        json::save(&path, &map)?;
-        Ok(Mutation {
-            name: normalized,
-            map,
-            ids: vec![node_id.to_owned()],
+        let target = node_id.to_owned();
+        let parent = new_parent_id.to_owned();
+        let idx = index.unwrap_or(usize::MAX);
+        self.mutate(name, expected_modified_at, |map| {
+            map.move_node(&target, &parent, idx)?;
+            Ok(vec![target.clone()])
         })
     }
 
@@ -401,14 +378,10 @@ impl MapStore {
         node_id: &str,
         expected_modified_at: Option<u64>,
     ) -> Result<Mutation, StoreError> {
-        let (normalized, path, mut map) = self.load(name)?;
-        check_modified_at(&map, expected_modified_at)?;
-        let removed = map.edit(|draft| draft.remove(node_id))?;
-        json::save(&path, &map)?;
-        Ok(Mutation {
-            name: normalized,
-            map,
-            ids: vec![removed.id],
+        let target = node_id.to_owned();
+        self.mutate(name, expected_modified_at, |map| {
+            let removed = map.remove(&target)?;
+            Ok(vec![removed.id])
         })
     }
 
@@ -419,17 +392,9 @@ impl MapStore {
         layout: LayoutKind,
         expected_modified_at: Option<u64>,
     ) -> Result<Mutation, StoreError> {
-        let (normalized, path, mut map) = self.load(name)?;
-        check_modified_at(&map, expected_modified_at)?;
-        map.edit(|draft| {
-            draft.set_layout(layout);
-            Ok(())
-        })?;
-        json::save(&path, &map)?;
-        Ok(Mutation {
-            name: normalized,
-            map,
-            ids: Vec::new(),
+        self.mutate(name, expected_modified_at, |map| {
+            map.set_layout(layout);
+            Ok(Vec::new())
         })
     }
 
@@ -459,6 +424,9 @@ impl MapStore {
         }
 
         let output_path = self.root.join(&output_name);
+        // Serialize the export while holding an exclusive lock so two clients
+        // cannot write the same output concurrently.
+        let _lock = FileLock::exclusive(&output_path)?;
         match fs::symlink_metadata(&output_path) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {
@@ -504,6 +472,32 @@ impl MapStore {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok((normalized, candidate)),
             Err(error) => Err(StoreError::Io(error)),
         }
+    }
+
+    /// Loads a map, checks the concurrency token, applies a change and writes
+    /// the result, all while holding an exclusive advisory lock on the file.
+    fn mutate<F>(
+        &self,
+        name: &str,
+        expected_modified_at: Option<u64>,
+        change: F,
+    ) -> Result<Mutation, StoreError>
+    where
+        F: FnOnce(&mut MindMap) -> Result<Vec<String>, CoreError>,
+    {
+        let (normalized, path) = self.resolve_with_name(name)?;
+        let _lock = FileLock::exclusive(&path)?;
+        let text = fs::read_to_string(&path)?;
+        let mut map = json::from_str(&text)?;
+        check_modified_at(&map, expected_modified_at)?;
+        let ids = map.edit(change)?;
+        let bytes = json::to_string(&map)?.into_bytes();
+        json::write_atomic(&path, &bytes)?;
+        Ok(Mutation {
+            name: normalized,
+            map,
+            ids,
+        })
     }
 }
 
@@ -989,6 +983,30 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_exports_to_the_same_file_do_not_corrupt_it() {
+        let (_directory, store) = store("export-concurrent");
+        store.create("map", "Map", "Root", None).unwrap();
+        let store = std::sync::Arc::new(store);
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let store = std::sync::Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                store
+                    .export("map", ExportFormat::Svg, Some("shared.svg"), true)
+                    .unwrap()
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let text = fs::read_to_string(store.root().join("shared.svg")).unwrap();
+        assert!(text.starts_with("<?xml"));
+        assert!(text.contains("Map"));
+    }
+
+    #[test]
     fn layouts_accept_aliases_and_reject_unknown_names() {
         assert_eq!(parse_layout("tree").unwrap(), LayoutKind::Tree);
         assert_eq!(parse_layout("BILATERAL").unwrap(), LayoutKind::Tree);
@@ -998,5 +1016,65 @@ mod tests {
             parse_layout("circular"),
             Err(StoreError::InvalidLayout(_))
         ));
+    }
+
+    #[test]
+    fn concurrent_writes_do_not_corrupt_the_map() {
+        let (_directory, store) = store("concurrent-writes");
+        store.create("map", "Map", "Root", None).unwrap();
+        let store = std::sync::Arc::new(store);
+
+        let mut handles = Vec::new();
+        for index in 0..10 {
+            let store = std::sync::Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for child in 0..5 {
+                    let (_, _, map) = store.load("map").unwrap();
+                    let root = map.root.id.clone();
+                    store
+                        .add_node(
+                            "map",
+                            &root,
+                            &format!("Thread {index} Child {child}"),
+                            None,
+                            None,
+                        )
+                        .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let (_, _, map) = store.load("map").unwrap();
+        assert_eq!(map.node_count(), 1 + 10 * 5);
+    }
+
+    #[test]
+    fn create_race_is_won_by_one_caller() {
+        let (_directory, store) = store("create-race");
+        let store = std::sync::Arc::new(store);
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let store = std::sync::Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                store
+                    .create("map", "Map", "Root", None)
+                    .map(|_| true)
+                    .or_else(|error| {
+                        if matches!(error, StoreError::MapExists(_)) {
+                            Ok(false)
+                        } else {
+                            Err(error)
+                        }
+                    })
+            }));
+        }
+        let results: Vec<bool> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|&&created| created).count(), 1);
     }
 }

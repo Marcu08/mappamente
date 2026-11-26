@@ -113,14 +113,25 @@ empty; the current UI does not render links yet.
 
 ## Writing safely
 
-`mappamente-core` writes to a temporary file in the same directory, calls
-`sync_all`, and then renames it over the target. On Windows the rename is
-retried briefly because a watcher or another process may briefly hold the
-destination open. A failed save leaves the previous file untouched.
+`mappamente-core` acquires an advisory exclusive lock, writes to a temporary
+file in the same directory, calls `sync_all`, and then renames it over the
+target. On Windows the rename is retried briefly because a watcher or another
+process may briefly hold the destination open. A failed save leaves the previous
+file untouched. Reads acquire an advisory shared lock so they do not race with a
+concurrent writer.
 
 Loads reject files larger than 5 MiB (`MAX_MAP_FILE_BYTES`) before reading them,
 so a malformed or hostile file cannot exhaust memory. Markdown input and text
 fields have their own limits when edited through the MCP server.
+
+## Recovery files
+
+While a document is dirty, the GUI may write a sibling recovery file named
+`.{name}.mappamente-recovery`. The recovery envelope contains metadata (original
+path, saved `modified_at`, recovery timestamp) and a full copy of the document.
+Recovery files are written atomically and are removed after a successful save.
+On startup, if a recovery file is newer than the saved document, Mappamente
+offers to restore it; it never silently replaces a newer saved file.
 
 ## Interoperability
 

@@ -89,6 +89,7 @@ pub(crate) struct AiPanel {
     base_url: String,
     model: String,
     api_key_input: String,
+    session_id: String,
     key_status: KeySource,
     initialized: bool,
     messages: Vec<ChatEntry>,
@@ -109,6 +110,7 @@ impl AiPanel {
             base_url: preset.base_url.to_owned(),
             model: preset.model.to_owned(),
             api_key_input: String::new(),
+            session_id: new_session_id(),
             key_status: KeySource::Missing,
             initialized: false,
             messages: vec![ChatEntry::status(WELCOME)],
@@ -480,6 +482,8 @@ impl AiPanel {
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             api_key,
+            session_id: matches!(preset.id, "opencode" | "opencode-go")
+                .then(|| self.session_id.clone()),
             key_env: preset.key_env.to_owned(),
             needs_key: preset.needs_key,
         };
@@ -633,11 +637,22 @@ impl AiPanel {
         if self.busy {
             return;
         }
+        self.session_id = new_session_id();
         self.messages.clear();
         self.messages.push(ChatEntry::status(WELCOME));
         self.usage = None;
         self.error = None;
     }
+}
+
+/// Returns a stable id for this conversation, sent to the OpenCode gateway as
+/// `x-opencode-session` so its routing and prompt cache stay consistent.
+fn new_session_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("ses_{nanos:032x}")
 }
 
 fn field_label(ui: &mut egui::Ui, tokens: &Tokens, text: &str) {
@@ -793,6 +808,7 @@ mod tests {
             base_url: String::new(),
             model: String::new(),
             api_key_input: String::new(),
+            session_id: new_session_id(),
             key_status: KeySource::Missing,
             initialized: true,
             messages: vec![
@@ -835,6 +851,7 @@ mod tests {
             base_url: format!("{base}/v1"),
             model: "test-model".to_owned(),
             api_key_input: String::new(),
+            session_id: new_session_id(),
             key_status: KeySource::Missing,
             initialized: true,
             messages: Vec::new(),

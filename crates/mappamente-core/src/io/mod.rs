@@ -1,12 +1,15 @@
 //! Reading and writing map files.
 
 pub mod json;
+pub mod lock;
 pub mod markdown;
+pub mod recovery;
 
 use std::fs;
 use std::path::Path;
 
 use crate::error::{Error, Result};
+use crate::io::lock::FileLock;
 use crate::model::MindMap;
 
 /// Maximum size of a map file accepted by [`load_path`] and
@@ -54,8 +57,9 @@ pub fn load_path(path: &Path) -> Result<MindMap> {
 /// outline). SVG output is produced by [`crate::export::svg`].
 pub fn save_path(path: &Path, map: &MindMap) -> Result<()> {
     map.validate()?;
+    let _lock = FileLock::exclusive(path)?;
     match extension(path).as_deref() {
-        Some("mappa" | "json") => json::save(path, map),
+        Some("mappa" | "json") => json::save_unlocked(path, map),
         Some("md" | "markdown") => {
             let text = markdown::to_markdown(map);
             json::write_atomic(path, text.as_bytes())
@@ -135,10 +139,12 @@ mod tests {
 
     #[test]
     fn svg_has_a_dedicated_hint() {
+        let directory = temporary_directory("svg-hint");
         let map = MindMap::new("Test", "Root");
-        let error = save_path(Path::new("out.svg"), &map).unwrap_err();
+        let error = save_path(&directory.join("out.svg"), &map).unwrap_err();
         assert!(error.to_string().contains("mappamente render"));
-        assert!(load_path(Path::new("in.svg")).is_err());
+        assert!(load_path(&directory.join("in.svg")).is_err());
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

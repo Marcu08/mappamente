@@ -261,6 +261,69 @@ loopback hosts. Requests carry a 120,000-character map-outline limit, the client
 has a 120-second timeout and follows no redirects, and error bodies are
 truncated before display. The API key is never logged.
 
+## D21 — Advisory file locking with `fs2`
+
+**Date:** 2026-11-25
+**Status:** accepted
+
+Cross-process concurrency between the GUI and MCP cannot be solved by the
+existing `modified_at` token alone: the check and write are separate filesystem
+operations. `fs2` provides cross-platform advisory locks (Windows `LockFileEx`,
+Unix `flock`) and is small and widely used. The lock is associated with a
+sibling `.mappamente-lock` file so it works even when the target document does
+not exist yet. All map reads and writes acquire the lock; the MCP server holds
+the exclusive lock across the entire mutation to eliminate the check-then-write
+race.
+
+## D22 — File watching with `notify`
+
+**Date:** 2026-11-25
+**Status:** accepted
+
+Live GUI/MCP synchronization requires a file watcher that works on Windows,
+Linux and macOS. `notify` is the standard Rust crate for this and uses the
+native APIs (ReadDirectoryChangesW, inotify, FSEvents, kqueue). The GUI creates
+one watcher per open file and polls events on each frame. External changes are
+verified by reading the saved `modified_at` before reloading or prompting for
+conflict resolution. A periodic revision poll supplements the watcher so missed
+events are still detected, and our own save echoes are suppressed by comparing
+the disk revision against `last_seen_revision`.
+
+## D23 — Crash recovery snapshots as sibling files
+
+**Date:** 2026-11-25
+**Status:** accepted
+
+Recovery snapshots are stored next to the original `.mappa` file as
+`.{name}.mappamente-recovery`. This keeps recovery files associated with their
+documents, avoids a central registry or database, and makes them easy to locate
+and clean up. The envelope records the original path and the saved
+`modified_at`, so outdated snapshots are ignored and the recovery workflow never
+silently replaces a newer saved file.
+
+## D24 — Explicit base-revision tracking in the GUI
+
+**Date:** 2026-11-26
+**Status:** accepted
+
+The GUI tracks three revision values for the open file:
+- `base_revision`: the `modified_at` of the file we last loaded or saved. Used
+  as the expected value for atomic compare-and-save.
+- `last_seen_revision`: the newest disk revision observed via watcher or poll.
+  Suppresses our own save echoes and repeated prompts.
+- `diverged_revision`: set when the user chooses "Keep Local" after an external
+  change; it records the disk revision we intentionally diverged from so later
+  saves must re-resolve the conflict instead of silently overwriting.
+
+Save As uses `save_if_current` with an expected revision of `None`. An existing
+destination triggers an explicit overwrite confirmation, and the atomic check
+inside the exclusive lock also catches a destination created by another process
+between the existence check and the write.
+
+This separates the on-disk base from the in-memory `modified_at`, fixes the
+previous 500 ms watcher-ignore race, and makes the Reload / Keep Local / Save As
+workflow safe.
+
 ## D20 — AI requests run on a plain worker thread
 
 **Date:** 2026-11-25

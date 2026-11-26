@@ -46,10 +46,10 @@ docs/                          demo map, screenshots, format and CLI docs
 .github/workflows/ci.yml       fmt, clippy -D warnings, tests on 3 OSes
 ```
 
-## Status (2026-11-25) — v0.1.0 plus unreleased work
+## Status (2026-11-25) — v0.2.0
 
-Milestones 1–3, the external-use changes, the MCP server, the AI panel and the
-visual redesign are complete in the working tree:
+Milestones 1–3, the MCP server, the AI panel, the visual redesign and the 0.2.0
+reliability work are complete in the working tree:
 
 - core model, JSON, layouts, undo/redo, validation, tests;
 - Markdown outline import/export, SVG export with four themes and the shared
@@ -65,17 +65,21 @@ visual redesign are complete in the working tree:
 - transactional `MindMap::edit`, `outline_with_ids`, Markdown subtree insertion,
   JSON migration hook, 5 MiB map-file limit;
 - `mappamente-mcp`: stdio MCP server with ten tools, sandboxed `--dir`,
-  optimistic concurrency and tool-level errors;
+  optimistic concurrency, advisory file locking and tool-level errors;
 - `mappamente-ai` + `ai_panel.rs`: provider presets (OpenAI, Anthropic,
   OpenCode Console/local, OpenRouter, Groq, DeepSeek, Mistral, Gemini, xAI,
   Ollama, LM Studio, custom), OS-keyring keys with env fallback, JSON action
   protocol and live canvas updates in one undo step;
-- 155 tests, CI for three operating systems, dual license.
+- 0.2.0 reliability features: autosave, crash-recovery snapshots, GUI file
+  watching with revision-based conflict detection (Reload / Keep Local / Save As),
+  periodic revision polling, explicit `base_revision` tracking, atomic
+  compare-and-save, and cross-process advisory locking;
+- 176 tests, CI for three operating systems, dual license.
 
 Known architecture debt: MCP file tools and AI actions are still separate; the
 shared tool registry from D3 is pending.
 
-Next: MCP live reload, then OPML/FreeMind, autosave and a shared tool registry.
+Next: OPML/FreeMind, PNG export and a shared tool registry.
 
 ## Commands
 

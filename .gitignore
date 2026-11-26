@@ -1,7 +1,9 @@
 /target
+/release
 /Mappamente.exe
 /Mappamente.lnk
 **/*.rs.bk
 *.tmp
+*.log
 .DS_Store
 Thumbs.db

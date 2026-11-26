@@ -26,6 +26,7 @@ clap.workspace = true
 eframe.workspace = true
 mappamente-ai = { path = "../mappamente-ai" }
 mappamente-core = { path = "../mappamente-core" }
+notify = "7"
 rfd.workspace = true
 
 [dev-dependencies]

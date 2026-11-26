@@ -15,7 +15,9 @@
 - `history` — `Editor`, snapshot undo/redo, transactions, drag coalescing,
   dirty tracking by monotonic revision.
 - `io::json` — pretty stable JSON, `migrate` hook, validation, atomic save/load,
-  5 MiB input limit (`MAX_MAP_FILE_BYTES`).
+  5 MiB input limit (`MAX_MAP_FILE_BYTES`), fast `modified_at` read.
+- `io::lock` — cross-process advisory file locking with sibling lock files.
+- `io::recovery` — crash-recovery snapshots and startup recovery workflow.
 - `io::markdown` — title + indented bullet outline; exactly one root; lossy.
   `insert_markdown_children` parses an outline, discards the parsed root when it
   has children, and inserts the remaining subtrees with fresh ids.
@@ -98,6 +100,9 @@ palette and readable text contrast.
 `MappamenteApp` owns:
 
 - `Editor` (document + undo history), current path;
+- persistence state: `base_revision` (the `modified_at` last loaded/saved),
+  `last_seen_revision` (last disk revision observed by watcher or poll), and
+  `diverged_revision` (disk revision intentionally ignored via "Keep Local");
 - view state: `kind`, `theme`, semantic `Tokens`, zoom, view center, fit flag;
 - derived state: cached `Layout`, parsed custom node colors, branch membership;
 - interaction state: selected/hovered node, inline `EditingState`, `DragState`,
@@ -180,13 +185,23 @@ Discrete edits never coalesce with drags.
 
 ## Persistence
 
-`json::save` validates, serializes pretty JSON with a trailing newline, writes
-a temp file in the destination directory, `sync_all`s and renames over the
-target (retries on Windows). Loading goes through `migrate`, validates schema
-version and invariants, and rejects files larger than 5 MiB. Unknown fields are
-ignored for forward compatibility. Markdown and SVG are written through the
-same atomic helper. AI provider keys live in the OS keyring or environment, not
-in `.mappa` files.
+`json::save` validates, serializes pretty JSON with a trailing newline, acquires
+an advisory exclusive lock, writes a temp file in the destination directory,
+`sync_all`s and renames over the target (retries on Windows). `json::save_if_current`
+performs an atomic compare-and-save: it acquires the exclusive lock, reads the
+on-disk `modified_at`, writes only when it matches the caller's expected
+revision, and reports `SaveResult::Saved` or `SaveResult::Conflict`. Save As
+uses `save_if_current` with an expected revision of `None`, so an existing
+destination cannot be silently overwritten and a destination created by another
+process between the check and the write is still detected. Loading acquires an
+advisory shared lock, then goes through `migrate`, validates schema version and
+invariants, and rejects files larger than 5 MiB. Unknown fields are ignored for
+forward compatibility. Markdown and SVG are written through the same atomic
+helper. Recovery snapshots are written as sibling files while a document is
+dirty and are offered on the next open if they are newer than the saved file;
+`read_recovery` reads the saved file revision under lock first to avoid racing
+concurrent writers.
+AI provider keys live in the OS keyring or environment, not in `.mappa` files.
 
 ## CLI conventions
 
@@ -201,11 +216,11 @@ in `.mappa` files.
 ## MCP and AI data flow
 
 ```
-external MCP client ──stdio──> mappamente-mcp ──atomic writes──> .mappa
+external MCP client ──stdio──> mappamente-mcp ──atomic locked writes──> .mappa
                                       │
                                 sandboxed --dir
                                       │
-                              (planned) file watcher
+                                 file watcher
                                       ▼
                                     GUI
 in-app AI panel ──JSON plan──> mappamente-ai ──HTTPS──> provider
@@ -217,5 +232,8 @@ in-app AI panel ──JSON plan──> mappamente-ai ──HTTPS──> provider
 
 The MCP crate owns the file-based tools. The AI panel uses a separate in-memory
 action protocol for now; unifying both behind one registry remains the target
-from D3. External agents edit maps through atomic file writes; live reload is
-not implemented yet.
+from D3. External agents edit maps through atomic, locked file writes; the GUI
+watches the file, polls the disk revision periodically, and reloads external
+changes or prompts for Reload / Keep Local / Save As when they conflict with
+local edits. "Keep Local" records the ignored disk revision so later saves
+(including autosave) cannot silently overwrite it.

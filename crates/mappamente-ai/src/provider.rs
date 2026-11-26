@@ -66,7 +66,17 @@ pub const PRESETS: &[ProviderPreset] = &[
         model: "deepseek-v4.1-flash",
         key_env: "OPENCODE_API_KEY",
         needs_key: true,
-        note: "OpenCode Console/Zen cloud gateway. For a local OpenCode server choose OpenCode local.",
+        note: "Pay-as-you-go Console balance. If you have a Go subscription, choose OpenCode Go instead.",
+    },
+    ProviderPreset {
+        id: "opencode-go",
+        name: "OpenCode Go",
+        protocol: Protocol::OpenAiCompatible,
+        base_url: "https://opencode.ai/inference/go/openai/v1",
+        model: "glm-5.3-flash",
+        key_env: "OPENCODE_API_KEY",
+        needs_key: true,
+        note: "OpenCode Go / Go Plus subscription gateway (not the Console balance). Model ids from opencode.ai/console/go, e.g. glm-5.3-flash, deepseek-v4.1-flash, kimi-k3.",
     },
     ProviderPreset {
         id: "opencode-local",
@@ -191,6 +201,9 @@ pub struct ProviderSettings {
     pub model: String,
     /// API key, if available.
     pub api_key: Option<String>,
+    /// Stable per-conversation id sent as `x-opencode-session` (required by
+    /// the OpenCode Go gateway), when the provider accepts it.
+    pub session_id: Option<String>,
     /// Environment variable to mention when the key is missing.
     pub key_env: String,
     /// Whether the key is required.
@@ -208,6 +221,7 @@ impl ProviderSettings {
             base_url: preset.base_url.to_owned(),
             model: preset.model.to_owned(),
             api_key: None,
+            session_id: None,
             key_env: preset.key_env.to_owned(),
             needs_key: preset.needs_key,
         }
@@ -244,7 +258,7 @@ mod tests {
         for id in ["ollama", "lmstudio", "custom", "opencode-local"] {
             assert!(!preset_by_id(id).unwrap().needs_key, "{id}");
         }
-        for id in ["openai", "anthropic", "opencode"] {
+        for id in ["openai", "anthropic", "opencode", "opencode-go"] {
             assert!(preset_by_id(id).unwrap().needs_key, "{id}");
         }
     }

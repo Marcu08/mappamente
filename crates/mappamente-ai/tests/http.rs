@@ -75,6 +75,7 @@ fn settings(base_url: String, protocol: Protocol) -> ProviderSettings {
         base_url,
         model: "test-model".to_owned(),
         api_key: Some("test-key".to_owned()),
+        session_id: None,
         key_env: "TEST_API_KEY".to_owned(),
         needs_key: true,
     }
@@ -156,6 +157,35 @@ fn http_errors_are_reported_with_the_provider_message() {
     assert!(error.to_string().contains("bad key"));
     let capture = server.join().unwrap();
     assert!(capture.headers.contains("authorization: bearer test-key"));
+}
+
+#[test]
+fn opencode_go_request_sends_the_session_header() {
+    let (base, server) = mock_server("200 OK", json!({"choices":[{"message":{"content":"ok"}}]}));
+    let client = ProviderClient::new().unwrap();
+    let mut provider = settings(base + "/v1", Protocol::OpenAiCompatible);
+    provider.id = "opencode-go".to_owned();
+    provider.session_id = Some("ses_test123".to_owned());
+    assert_eq!(client.send(&request(provider)).unwrap().text, "ok");
+
+    let capture = server.join().unwrap();
+    assert!(capture.headers.contains("x-opencode-session: ses_test123"));
+    assert!(capture.headers.contains("authorization: bearer test-key"));
+}
+
+#[test]
+fn console_payment_errors_point_go_subscribers_to_the_go_provider() {
+    let (base, server) = mock_server(
+        "402 Payment Required",
+        json!({"error":{"message":"Insufficient account funds"}}),
+    );
+    let client = ProviderClient::new().unwrap();
+    let mut provider = settings(base + "/v1", Protocol::OpenAiCompatible);
+    provider.id = "opencode".to_owned();
+    let error = client.send(&request(provider)).unwrap_err().to_string();
+    assert!(error.contains("Insufficient account funds"));
+    assert!(error.contains("OpenCode Go"));
+    server.join().unwrap();
 }
 
 #[test]

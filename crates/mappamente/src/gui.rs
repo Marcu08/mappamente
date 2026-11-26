@@ -1849,21 +1849,21 @@ impl MappamenteApp {
             if text_size >= 5.0 && !editing_this && appear > 0.05 {
                 let font_id = FontId::proportional(text_size);
                 let row_height = context.fonts_mut(|fonts| fonts.row_height(&font_id));
-                let pad_x = 14.0;
+                let pad_x = 14.0 * self.zoom;
                 let text_block_height = node.lines.len() as f32 * row_height;
-                let top_y = node.rect.y + (node.rect.h - text_block_height) / 2.0;
+                let top_y = screen_rect.top() + (screen_rect.height() - text_block_height) / 2.0;
+                // Clip to the node so text does not spill outside if the current
+                // zoom makes the wrapped lines wider than the node.
+                let clipped = painter.with_clip_rect(screen_rect);
                 for (index, line) in node.lines.iter().enumerate() {
                     if line.is_empty() {
                         continue;
                     }
-                    let position = self.to_screen(
-                        mappamente_core::Point::new(
-                            node.rect.x + pad_x,
-                            top_y + index as f32 * row_height + row_height * 0.5,
-                        ),
-                        viewport,
+                    let position = egui::pos2(
+                        screen_rect.left() + pad_x,
+                        top_y + index as f32 * row_height + row_height * 0.5,
                     );
-                    painter.text(
+                    clipped.text(
                         position,
                         Align2::LEFT_CENTER,
                         line,
